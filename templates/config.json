@@ -13,43 +13,75 @@
   "shared": ["src/bus", "src/helpers", "src/components/ui", "src/lib"],
   "aliases": {"@/": "src/"},
   "stop_checks": [],
+  "baseline_check": {
+    "**/*.spec.ts": "npx playwright test {files} --reporter=line --max-failures=3",
+    "**/*.test.ts": "npm run -s --if-present test -- {files}"
+  },
+  "deep_clarification": false,
+  "design_approval": "deep",
+  "split_at": {"nodes": 40, "domains": 3},
+  "ux_audit": {
+    "max_rounds": 3,
+    "base_url": "http://localhost:3000",
+    "viewports": [[375, 667], [1280, 800]],
+    "reflow_width": 320
+  },
+  "orchestration": {
+    "cost_budget_usd": null,
+    "budget_window": "day",
+    "rate_limit_floor": 20,
+    "unknown_usage_factor": 1.5,
+    "shared_context_limit": 0.5
+  },
+  "integration_checks": [
+    "npm ci --no-audit --no-fund --silent",
+    "npm run -s --if-present test",
+    "npx playwright test --reporter=line --max-failures=10"
+  ],
+  "integration_timeout": 1800,
   "budget_default": "standard",
   "budgets": {
     "lean": {
       "for": "tier S: small fixes, copy changes, config",
       "session": {"model": "sonnet", "effort": "low", "autocompact": 150000},
-      "agents": {"architect": null, "e2e-author": null, "implementer": null, "reviewer": "haiku"},
+      "agents": {"architect": null, "e2e-author": null, "implementer": null, "auditor": null, "reviewer": "haiku"},
+      "planning_effort": "medium",
       "read_limit": "graph first, then at most 3 files, by line range",
       "impact": "direct callers and callees only",
       "stop_checks": [
         "npm run -s --if-present test",
         "npx playwright test --grep @item:{item} --reporter=line --max-failures=1 --pass-with-no-tests"
       ],
-      "handoff_at": 40
+      "handoff_at": 40,
+      "estimate_usd": 2
     },
     "standard": {
       "for": "tier M: features and refactor items",
       "session": {"model": "sonnet", "effort": "medium", "autocompact": 250000},
-      "agents": {"architect": "opus", "e2e-author": "sonnet", "implementer": "sonnet", "reviewer": "sonnet"},
+      "agents": {"architect": "opus", "e2e-author": "sonnet", "implementer": "sonnet", "auditor": "sonnet", "reviewer": "sonnet"},
+      "planning_effort": "high",
       "read_limit": "graph first, then up to 8 files, by line range",
       "impact": "direct callers and callees plus one hop of importers",
       "stop_checks": [
         "npm run -s --if-present test",
         "npx playwright test --grep \"@item:{item}|@smoke\" --reporter=line --max-failures=3 --pass-with-no-tests"
       ],
-      "handoff_at": 60
+      "handoff_at": 60,
+      "estimate_usd": 8
     },
     "deep": {
       "for": "auth, payments, RLS, cross-domain changes, escalated items",
       "session": {"model": "opus", "effort": "high", "autocompact": 400000},
-      "agents": {"architect": "opus", "e2e-author": "sonnet", "implementer": "opus", "reviewer": "opus"},
+      "agents": {"architect": "opus", "e2e-author": "sonnet", "implementer": "opus", "auditor": "opus", "reviewer": "opus"},
+      "planning_effort": "max",
       "read_limit": "graph first, then what the design needs",
       "impact": "one hop of importers plus a second hop of callers, ranked with impact_and_risk",
       "stop_checks": [
         "npm run -s --if-present test",
         "npx playwright test --reporter=line --max-failures=5"
       ],
-      "handoff_at": 75
+      "handoff_at": 75,
+      "estimate_usd": 25
     }
   }
 }
