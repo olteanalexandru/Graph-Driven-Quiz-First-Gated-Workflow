@@ -41,7 +41,7 @@ def cmd_status(root, cfg, args):
             print(f"  edited by hand: {f}")
         for f in state["changed"]:
             print(f"  changed since approval: {f}")
-    if args.gate and required and state["status"] in ("draft", "changed"):
+    if args.gate and required and state["status"] != "approved":
         return 1
     return 0
 
@@ -57,6 +57,9 @@ def cmd_approve(root, cfg, args):
 
 
 def cmd_unlock(root, cfg, args):
+    if not lib.item_dir(root, args.item).is_dir():
+        print(f"docs/items/{args.item}/ not found")
+        return 2
     bad = [f for f in args.files if not lib.is_design_file(f)]
     if bad:
         print(f"not design files: {', '.join(bad)}")

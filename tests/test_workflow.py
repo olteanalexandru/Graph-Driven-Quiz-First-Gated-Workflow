@@ -412,6 +412,22 @@ code, out, err = edit("docs/items/ITEM-001/design.lock.json")
 expect("design lock: Claude's edit tools may not change it", code == 2 and "design.py approve" in err, err)
 code, out, err = bash("echo '{}' > docs/items/ITEM-001/design.lock.json")
 expect("design lock: shell writes blocked", code == 2, err)
+code, out, err = bash("cat docs/items/ITEM-001/design.lock.json 2>/dev/null | head -5; git log -1 2>&1 >&2")
+expect("design lock: reads with 2>/dev/null or 2>&1 are allowed", code == 0 and out == "", out + err)
+code, out, err = bash("sed -i 's/reload/refresh/' docs/items/ITEM-001/uml/sequence-award.mmd")
+expect("design guard: a shell write to a design file asks", code == 0 and decision(out).get("permissionDecision") == "ask"
+       and "not recorded" in decision(out).get("permissionDecisionReason", ""), out + err)
+code, out, err = hook("pre-bash", {"tool_name": "Bash", "permission_mode": "bypassPermissions", "cwd": str(wt),
+                                   "tool_input": {"command": "git checkout -- docs/items/ITEM-001/uml/"}}, wt)
+expect("design guard: restoring design files from git is denied in bypass mode", code == 2 and "design files" in err, err)
+code, out, err = bash("cat docs/items/ITEM-001/uml/sequence-award.mmd")
+expect("design guard: reading a design file in the shell is allowed", code == 0 and out == "", out + err)
+lock_text = (D1 / "design.lock.json").read_text()
+for broken in ("null", '{"files": null}', '{"approved": true}', '{"files": {"uml/a.mmd": 3}}'):
+    (D1 / "design.lock.json").write_text(broken)
+    code, out, err = edit(UML)
+    expect(f"design guard: a lock shaped {broken} still asks", code == 0 and decision(out).get("permissionDecision") == "ask", out + err)
+(D1 / "design.lock.json").write_text(lock_text)
 
 spec_path = D1 / "spec.md"
 spec_before = spec_path.read_text()
@@ -494,6 +510,7 @@ verdict: FAIL
 """, root=wt)
 write("tests/e2e/ITEM-001-flow.spec.ts",
       "test('AC1 shows XP @item:ITEM-001', () => {})\ntest('AC9 ghost @item:ITEM-001', () => {})\n", root=wt)
+write("tests/e2e/ITEM-0010-other.spec.ts", "test('AC2 belongs to another item @item:ITEM-0010', () => {})\n", root=wt)
 design("approve", "ITEM-001")
 
 
@@ -514,7 +531,8 @@ expect("trace plan: no test checks yet", "has no test" not in errs and code == 1
 expect("trace plan: unused decision is a warning", any("D3 is not cited" in w for w in res.get("warnings", [])), str(res))
 code, res = trace("--stage", "build")
 errs, warns = "\n".join(res.get("errors", [])), "\n".join(res.get("warnings", []))
-expect("trace build: AC without a test", "AC2 has no test" in errs and "AC1 has no test" not in errs, errs)
+expect("trace build: AC without a test (another item's @item:ITEM-0010 does not count)",
+       "AC2 has no test" in errs and "AC1 has no test" not in errs and "ITEM-0010" not in errs, errs)
 expect("trace build: kept feature without a test", "baseline F2 (keep) has no test" in errs and "F1 (keep)" not in errs, errs)
 expect("trace build: budget without a test", "performance budget PB1 has no test" in errs, errs)
 expect("trace build: test for an unknown AC", "test AC9" in errs, errs)
@@ -542,8 +560,12 @@ save_config()
 for name in ("baseline.md", "performance.md", "audit.md", "design.lock.json"):
     (D1 / name).unlink()
 shutil.rmtree(D1 / "uml")
+spec_path.write_text(spec_before.replace("status: approved\n", "status: approved\nclarify: deep\n"))
+code, out, err = edit("src/a/one.ts")
+expect("design gate: no design at all still waits for approval", code == 2 and "has not been written or approved" in err, err)
 spec_path.write_text(spec_before)
-for rel in ("src/a/XpCard.tsx", "tests/e2e/existing.spec.ts", "tests/e2e/ITEM-001-flow.spec.ts"):
+for rel in ("src/a/XpCard.tsx", "tests/e2e/existing.spec.ts", "tests/e2e/ITEM-001-flow.spec.ts",
+            "tests/e2e/ITEM-0010-other.spec.ts"):
     (wt / rel).unlink()
 
 p = sched("release", "ITEM-001")
@@ -710,6 +732,13 @@ write("src/a.ts", "export const a = 2 // later\n", root=iwt["ITEM-020"])
 sh("git", "commit", "-q", "-am", "ITEM-020: review fixes", cwd=iwt["ITEM-020"])
 p = integ("verify", "ITEM-020", cwd=iwt["ITEM-020"])
 expect("integrate: a new commit needs a new run", p.returncode == 1, p.stdout)
+icfg["integration_checks"] = ["true"]
+write(".flow/config.json", json.dumps(icfg), root=ir)
+p = integ("run", "ITEM-020")
+solo = next((ln.split()[2].rstrip(":") for ln in p.stdout.splitlines() if ln.startswith("integration run")), "")
+integ("finish", solo, "--verdict", "PASS")
+p = integ("verify", "ITEM-020", cwd=iwt["ITEM-020"])
+expect("integrate: a run without the partner does not count", p.returncode == 1 and "ITEM-021" in p.stdout, p.stdout)
 icfg["integration_checks"] = ["echo cross-component failure && false"]
 write(".flow/config.json", json.dumps(icfg), root=ir)
 p = integ("run")
@@ -760,13 +789,17 @@ if playwright_available():
         "states": [{"name": "default", "path": "/"},
                    {"name": "empty", "path": "/", "mock": [{"url": "**/api/items", "action": "json", "body": []}]},
                    {"name": "error", "path": "/", "mock": [{"url": "**/api/items", "action": "status", "status": 500}]},
-                   {"name": "loading", "path": "/", "mock": [{"url": "**/api/items", "action": "hang"}]}]}))
+                   {"name": "loading", "path": "/", "mock": [{"url": "**/api/items", "action": "hang"}]},
+                   {"name": "unreachable", "url": "http://127.0.0.1:9/"}]}))
     p = sh("node", str(PLUGIN / "scripts" / "ux_probe.mjs"), "--states", str(states), "--out", str(TMP / "probe-out"),
            cwd=TMP, check=False)
     server.shutdown()
     report = json.loads((TMP / "probe-out" / "report.json").read_text()) if (TMP / "probe-out" / "report.json").exists() else {}
-    by = {(s["name"], s["viewport"][0]): s for s in report.get("states", [])}
+    by = {(s["name"], s["viewport"][0]): s for s in report.get("states", []) if "error" not in s}
+    failed = [s for s in report.get("states", []) if "error" in s]
     expect("ux probe: every state at every viewport", p.returncode == 0 and len(by) == 8, p.stdout + p.stderr)
+    expect("ux probe: an unreachable state is recorded and the rest still run",
+           [s["name"] for s in failed] == ["unreachable", "unreachable"], str(failed))
     expect("ux probe: mocks reach the loading, empty and error states",
            "Loading..." in by.get(("loading", 375), {}).get("text", "") and "No items yet" in by.get(("empty", 375), {}).get("text", "")
            and "Something went wrong" in by.get(("error", 375), {}).get("text", ""), str(by.keys()))
@@ -780,7 +813,7 @@ if playwright_available():
     expect("ux probe: tab order and focus without a visible indicator",
            kb.get("order", [])[:1] == ['input#answer "Answer"'] and kb.get("noVisibleFocus") == ['button#plain "Check"']
            and kb.get("trap") is False, str(kb))
-    expect("ux probe: screenshots written", all(Path(s["screenshot"]).exists() for s in report.get("states", [])))
+    expect("ux probe: screenshots written", by and all(Path(s["screenshot"]).exists() for s in by.values()))
 else:
     print("skip ux probe tests (Node with Playwright not available)")
 

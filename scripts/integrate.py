@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -47,7 +46,7 @@ def load_run(root, run_id):
 
 
 def head_of(root, item):
-    return lib.git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{item}")
+    return lib.branch_head(root, item)
 
 
 def tail(text, n=25):
@@ -97,7 +96,7 @@ def cmd_run(root, cfg, args):
         if not checks:
             run["checks"].append({"cmd": "(none)", "ok": False,
                                   "tail": "no integration_checks in .flow/config.json; add the project's test commands"})
-        grep = shlex.quote("|".join(f"@item:{i}" for i in items))
+        grep = lib.shell_quote("|".join(f"@item:{i}" for i in items))
         timeout = int(cfg.get("integration_timeout", 1800))
         for cmd in checks:
             cmd = cmd.replace("{grep}", grep)
@@ -151,15 +150,16 @@ def cmd_finish(root, cfg, args):
 
 
 def cmd_verify(root, cfg, args):
-    run = lib.integration_covered(root, args.item)
-    if run:
-        print(f"{args.item}: integrated in run {run['run']} with {', '.join(i for i in run['order'] if i != args.item) or 'the base'}")
-        return 0
     partners = lib.integration_partners(root, cfg, args.item)
     if not partners:
         print(f"{args.item}: no integration needed (no other claimed item has passed review)")
         return 0
-    print(f"{args.item}: finished together with {', '.join(partners)}; run /flow:integrate before shipping")
+    run = lib.integration_covered(root, args.item, partners)
+    if run:
+        print(f"{args.item}: integrated with {', '.join(partners)} in run {run['run']}")
+        return 0
+    print(f"{args.item}: finished together with {', '.join(partners)}, and no passing integration run covers "
+          f"the current heads of all of them; run /flow:integrate before shipping")
     return 1
 
 

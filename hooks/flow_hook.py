@@ -82,8 +82,9 @@ def design_guard(data, root, item, sub):
         return 0
     reason = "; ".join(reasons)
     if data.get("permission_mode") in NO_PROMPT_MODES:
+        script = lib.shell_quote(PLUGIN_ROOT / "scripts" / "design.py")
         sys.stderr.write(f"[flow] {reason}. Ask the user in chat before changing it. If they agree, run "
-                         f"`python3 {PLUGIN_ROOT}/scripts/design.py unlock {item} {sub}` and retry.\n")
+                         f"`python3 {script} unlock {item} {sub}` and retry.\n")
         return 2
     emit({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
                                  "permissionDecisionReason": f"[flow] {reason}. Allow only if this change "
@@ -115,9 +116,9 @@ def pre_edit(data, root, cfg):
         return problem(cfg, "PreToolUse", f"{item} has no approved spec at docs/items/{item}/spec.md. Run /flow:quiz first.")
     if spec.get("tier") != "S" and lib.design_approval_required(cfg, spec):
         state = lib.design_state(root, item)
-        if state["status"] in ("draft", "changed"):
-            what = ("is not approved yet" if state["status"] == "draft"
-                    else "changed since it was approved: " + ", ".join(state["changed"]))
+        if state["status"] != "approved":
+            what = {"none": "has not been written or approved yet", "draft": "is not approved yet"}.get(
+                state["status"], "changed since it was approved: " + ", ".join(state["changed"]))
             return problem(cfg, "PreToolUse",
                            f"The design of {item} {what}. Code waits for the user's approval: run /flow:plan "
                            f"{item} to bring the spec and tests in line and ask for approval.")
@@ -178,7 +179,10 @@ def git_subcommand(tokens):
     return (tokens[i], tokens[i + 1:]) if i < len(tokens) else (None, [])
 
 
-SHELL_WRITE = re.compile(r">|\bsed\s+-i|\btee\b|\bmv\b|\bcp\b|\brm\b|\bperl\s+-i|write_text|open\(")
+# A redirect into a file (not 2>&1, >&2 or /dev/null), or a command that writes or restores files.
+SHELL_WRITE = re.compile(r"(?<![\d&>])>{1,2}(?!>|\s*(?:&|/dev/null\b))|\bsed\s+-i|\btee\b|\bmv\b|\bcp\b|\brm\b"
+                         r"|\bperl\s+-i|\btruncate\b|write_text|open\(|\bgit\s+(?:checkout|restore)\b")
+DESIGN_PATH = re.compile(r"docs/items/[^/\s'\"]+/(?:uml/|data-structures\.md|messages\.md|performance\.md|baseline\.md)")
 
 
 def bash_problems(command, base, branch):
@@ -228,9 +232,18 @@ def bash_problems(command, base, branch):
 def pre_bash(data, root, cfg):
     command = (data.get("tool_input") or {}).get("command") or ""
     found = bash_problems(command, cfg.get("base_branch", "main"), lib.current_branch(root))
-    if not found:
-        return 0
-    return problem(cfg, "PreToolUse", "; ".join(found) + ". Ask the user to run it if it is really needed.")
+    if found:
+        return problem(cfg, "PreToolUse", "; ".join(found) + ". Ask the user to run it if it is really needed.")
+    design = sorted(set(DESIGN_PATH.findall(command)))
+    if design and SHELL_WRITE.search(command):
+        reason = (f"this shell command changes design files ({', '.join(design)}). Shell writes are not recorded, "
+                  f"so the result would count as the user's own edit; Claude should use Edit or Write instead")
+        if data.get("permission_mode") in NO_PROMPT_MODES:
+            sys.stderr.write(f"[flow] {reason}.\n")
+            return 2
+        emit({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                     "permissionDecisionReason": f"[flow] {reason}. Allow only if you want this change."}})
+    return 0
 
 
 # ---------------------------------------------------------------- Stop: item checks
@@ -270,7 +283,7 @@ def baseline_commands(root, cfg, item):
             if lib.entry_matches(f, glob):
                 groups.setdefault(cmd, []).append(f)
                 break
-    return [cmd.replace("{files}", " ".join(shlex.quote(f) for f in fs)) for cmd, fs in groups.items()]
+    return [cmd.replace("{files}", " ".join(lib.shell_quote(f) for f in fs)) for cmd, fs in groups.items()]
 
 
 def stop(data, root, cfg):
@@ -290,7 +303,7 @@ def stop(data, root, cfg):
         return 0
     _, budget = lib.item_budget(root, cfg, item)
     checks = budget.get("stop_checks") if budget.get("stop_checks") is not None else cfg.get("stop_checks")
-    quoted = shlex.quote(item)
+    quoted = lib.shell_quote(item)
     commands = [c.replace("{item}", quoted) for c in checks or []]
     commands += baseline_commands(root, cfg, item)
     if (Path(root) / "security" / "checks.py").exists():
@@ -409,7 +422,16 @@ def main(argv):
         return 0
     if cfg.get("_error") and event in ("pre-edit", "pre-bash"):
         emit({"systemMessage": f"[flow warn] {cfg['_error']}"})
-    code = handlers[event](data, root, cfg)
+    try:
+        code = handlers[event](data, root, cfg)
+    except Exception as e:                            # a crash must not wave an edit through unchecked
+        reason = f"[flow] the {event} hook failed ({type(e).__name__}: {e})"
+        if event == "pre-edit":
+            emit({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                         "permissionDecisionReason": reason + "; asking instead of guessing."}})
+        else:
+            emit({"systemMessage": reason})
+        code = 0
     if _OUT:
         sys.stdout.write(json.dumps(_OUT))
     return code

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import statistics
 import subprocess
 import time
@@ -262,7 +263,7 @@ def item_stage(root, item, cfg=None):
     tier = spec.get("tier", "M")
     if tier != "S" and not (d / "uml").exists():
         return "S2"
-    if design_approval_required(cfg, spec) and design_state(root, item)["status"] in ("draft", "changed"):
+    if tier != "S" and design_approval_required(cfg, spec) and design_state(root, item)["status"] != "approved":
         return "S2"
     if not (d / "impact.json").exists():
         return "S3"
@@ -270,7 +271,8 @@ def item_stage(root, item, cfg=None):
     if review.exists():
         if not verdict_pass(review.read_text("utf-8", "ignore")):
             return "S5"
-        if integration_partners(root, cfg, item) and not integration_covered(root, item):
+        partners = integration_partners(root, cfg, item)
+        if partners and not integration_covered(root, item, partners):
             return "S7a"
         return "S8"
     tests = [p for p in Path(root).glob("tests/**/*") if item in p.name]
@@ -382,18 +384,32 @@ def design_files(root, item):
 
 
 def load_lock(root, item):
+    """The item's design lock. A broken lock carries "_error" and counts every file as edited by hand."""
     path = item_dir(root, item) / LOCK_NAME
     lock = {}
     if path.exists():
         try:
             lock = json.loads(path.read_text("utf-8"))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError):
             lock = {"_error": f"{path.name} is not valid JSON"}
+    if not isinstance(lock, dict):
+        lock = {"_error": f"{path.name} is not a JSON object"}
+    shapes = {"files": dict, "approved": (dict, type(None)), "unlocked": list}
+    bad = [k for k, t in shapes.items() if k in lock and not isinstance(lock[k], t)]
+    if bad or not all(isinstance(v, str) for v in (lock.get("files") or {}).values()):
+        lock = {"_error": f"{path.name} has an unexpected shape ({', '.join(bad) or 'files'})"}
+    if lock.get("approved") is not None and not isinstance(lock["approved"].get("files", {}), dict):
+        lock = {"_error": f"{path.name} has an unexpected shape (approved.files)"}
     lock.setdefault("item", item)
     lock.setdefault("files", {})
     lock.setdefault("approved", None)
     lock.setdefault("unlocked", [])
     return lock
+
+
+def shell_quote(text):
+    """Quote one argument for the platform shell that subprocess(shell=True) runs (cmd.exe on Windows)."""
+    return subprocess.list2cmdline([str(text)]) if os.name == "nt" else shlex.quote(str(text))
 
 
 def write_json(path, data):
@@ -602,11 +618,18 @@ def integration_runs(root):
     return runs
 
 
-def integration_covered(root, item):
-    """The PASS run that tested the item's current branch head, or None."""
-    head = git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{item}")
+def branch_head(root, item):
+    return git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{item}")
+
+
+def integration_covered(root, item, partners=()):
+    """The PASS run that tested the item's current head together with every partner's current head, or None."""
+    heads = {i: branch_head(root, i) for i in [item, *partners]}
+    if not all(heads.values()):
+        return None
     for run in reversed(integration_runs(root)):
-        if head and run.get("verdict") == "PASS" and (run.get("items") or {}).get(item) == head:
+        tested = run.get("items") or {}
+        if run.get("verdict") == "PASS" and all(tested.get(i) == h for i, h in heads.items()):
             return run
     return None
 

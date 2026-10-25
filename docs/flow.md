@@ -77,6 +77,11 @@ The design is a draft the user can edit before and during the build:
   prompts first; a change outside Claude shows as "changed since approval". For deep
   items (or with `design_approval: "always"`) code edits wait until the design is
   approved again.
+- Shell commands that write design files (`sed -i`, redirects, `git checkout --`) also
+  prompt: they are not recorded, so their result would count as the user's own edit.
+  Keep formatters that rewrite files on save or commit (prettier, lint-staged) away
+  from `docs/items/`; a reformatted file looks edited by hand, which only means more
+  prompts, never fewer.
 - `trace.py check <ID>` keeps the pieces in sync: every AC cites a decision, every
   design file cites decisions that exist, every kept feature and budget has a test, no
   test points at nothing, and diagram participants that the code lacks are listed.

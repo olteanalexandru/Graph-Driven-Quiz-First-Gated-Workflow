@@ -51,11 +51,13 @@ def severity(cell):
 def collect_tests(root, item):
     """Test IDs (AC1, F2, PB1, U3) -> files, from titles tagged @item:<ID> and Rust tests in files named with the item."""
     found = {}
+    tag = re.compile(r"@item:" + re.escape(item) + r"(?![\w-])")      # @item:ITEM-1 is not @item:ITEM-10
     out = lib.git(root, "grep", "-n", "-I", "--untracked", "-F", f"@item:{item}", "--", ".", ":(exclude)docs")
     for line in (out or "").splitlines():
         path, _, rest = line.partition(":")
-        m = TEST_TITLE.search(rest.partition(":")[2])
-        if m:
+        content = rest.partition(":")[2]
+        m = TEST_TITLE.search(content)
+        if m and tag.search(content):
             found.setdefault(m.group(1) + m.group(2), set()).add(path)
     key = item.lower().replace("-", "_")
     for p in Path(root).glob("tests/**/*.rs"):

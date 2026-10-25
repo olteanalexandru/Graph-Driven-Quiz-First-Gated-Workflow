@@ -178,7 +178,15 @@ async function main() {
   const report = { at: new Date().toISOString(), base_url: cfg.base_url, root: cfg.root, axe: axeName, states: [] };
   for (const state of cfg.states) {
     for (const vp of viewports) {
-      const { context, page, errors, msToRoot } = await open(browser, cfg, state, vp);
+      let opened;
+      try {
+        opened = await open(browser, cfg, state, vp);
+      } catch (e) {                                   // one unreachable state must not lose the others
+        report.states.push({ name: state.name, viewport: vp, error: String(e.message || e).slice(0, 300) });
+        console.log(`${state.name} ${vp[0]}x${vp[1]}: could not reach the state (${String(e.message || e).split('\n')[0]})`);
+        continue;
+      }
+      const { context, page, errors, msToRoot } = opened;
       const info = await page.evaluate(inspect, { root: cfg.root, selector: CONTROLS });
       const shot = path.join(out, `${state.name}-${vp[0]}x${vp[1]}.png`);
       const target = cfg.root && !info.missingRoot ? page.locator(cfg.root).first() : page;
@@ -200,7 +208,7 @@ async function main() {
   }
   const first = cfg.states[0];
   const wide = [...viewports].sort((a, b) => b[0] - a[0])[0];
-  {
+  try {
     const { context, page } = await open(browser, cfg, first, wide);
     const order = [];
     let same = 0;
@@ -228,8 +236,11 @@ async function main() {
     await context.close();
     console.log(`keyboard: ${inRoot.length} stops in the root, ${report.keyboard.noVisibleFocus.length} without visible focus, ` +
       `${report.keyboard.obscured.length} obscured, trap ${report.keyboard.trap ? 'yes' : 'no'}`);
+  } catch (e) {
+    report.keyboard = { error: String(e.message || e).slice(0, 300) };
+    console.log(`keyboard: not checked (${String(e.message || e).split('\n')[0]})`);
   }
-  {
+  try {
     const width = cfg.reflow_width || 320;
     const { context, page } = await open(browser, cfg, first, [width, 640]);
     report.reflow = { width, overflowX: (await page.evaluate(inspect, { root: cfg.root, selector: CONTROLS })).overflowX };
@@ -240,6 +251,9 @@ async function main() {
     await reduced.context.close();
     console.log(`reflow ${width}px: overflow ${report.reflow.overflowX ? 'yes' : 'no'}; ` +
       `reduced motion: ${report.reducedMotion.runningAnimations} animations still running`);
+  } catch (e) {
+    report.reflow = report.reflow || { error: String(e.message || e).slice(0, 300) };
+    console.log(`reflow and reduced motion: not checked (${String(e.message || e).split('\n')[0]})`);
   }
   await browser.close();
   writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));

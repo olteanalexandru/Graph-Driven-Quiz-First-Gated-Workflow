@@ -26,6 +26,8 @@ or show the difference and ask. Templates are in `${CLAUDE_PLUGIN_ROOT}/template
    server. Ask once, in one AskUserQuestion, whether clarification should be deep by
    default (`deep_clarification`) and whether to set a global cost budget per day
    (`orchestration.cost_budget_usd`, null for none). Add `.flow/state/` to .gitignore.
+   If a formatter rewrites markdown on save or commit (prettier, lint-staged), add
+   `docs/items/` to its ignore file: the design guard compares file hashes.
 4. CLAUDE.md: insert `templates/CLAUDE.md` between `<!-- flow:start -->` and
    `<!-- flow:end -->` (replace the block if it exists; keep everything else). Keep the
    whole file under 200 lines; move long project notes into `.claude/rules/`.
