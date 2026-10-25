@@ -722,6 +722,68 @@ expect("integrate: a merge conflict blocks and names the file", p.returncode == 
 leftover = [d for d in TMP.iterdir() if "integration" in d.name]
 expect("integrate: blocked runs leave no worktree behind", not leftover, str(leftover))
 
+
+# ---------------------------------------------------------------- UX probe (needs Node and Playwright)
+
+def playwright_available():
+    if not shutil.which("node"):
+        return False
+    probe = "const r=require('module').createRequire(process.cwd()+'/x.js');try{r('playwright')}catch(e){r('@playwright/test')}"
+    return subprocess.run(["node", "-e", probe], cwd=TMP, capture_output=True).returncode == 0
+
+
+if playwright_available():
+    import functools
+    import http.server
+    import threading
+    site = TMP / "probe-site"
+    (site / "api").mkdir(parents=True)
+    (site / "index.html").write_text("""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width"><style>
+.wide{width:600px;height:10px} #plain:focus{outline:none} .tiny{display:inline-block;width:16px;height:16px}
+</style></head><body><a href="#main">Skip</a>
+<section data-testid="quiz"><h1>Intervals</h1><label for="answer">Answer</label><input id="answer">
+<button id="icon"><svg width="20" height="20"></svg></button><button id="plain">Check</button>
+<a class="tiny" href="#help">?</a><div class="wide"></div><p id="status">Loading...</p></section>
+<script>fetch('/api/items').then(r => { if (!r.ok) throw new Error('bad'); return r.json() })
+.then(i => { document.getElementById('status').textContent = i.length ? i.length + ' items' : 'No items yet' })
+.catch(() => { document.getElementById('status').textContent = 'Something went wrong' })</script></body></html>""")
+    (site / "api" / "items").write_text("[1, 2]")
+    handler = functools.partial(type("Quiet", (http.server.SimpleHTTPRequestHandler,),
+                                     {"log_message": lambda *a: None}), directory=str(site))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    states = TMP / "ux-states.json"
+    states.write_text(json.dumps({
+        "base_url": f"http://127.0.0.1:{server.server_address[1]}", "root": "[data-testid=quiz]",
+        "viewports": [[375, 667], [1280, 800]],
+        "states": [{"name": "default", "path": "/"},
+                   {"name": "empty", "path": "/", "mock": [{"url": "**/api/items", "action": "json", "body": []}]},
+                   {"name": "error", "path": "/", "mock": [{"url": "**/api/items", "action": "status", "status": 500}]},
+                   {"name": "loading", "path": "/", "mock": [{"url": "**/api/items", "action": "hang"}]}]}))
+    p = sh("node", str(PLUGIN / "scripts" / "ux_probe.mjs"), "--states", str(states), "--out", str(TMP / "probe-out"),
+           cwd=TMP, check=False)
+    server.shutdown()
+    report = json.loads((TMP / "probe-out" / "report.json").read_text()) if (TMP / "probe-out" / "report.json").exists() else {}
+    by = {(s["name"], s["viewport"][0]): s for s in report.get("states", [])}
+    expect("ux probe: every state at every viewport", p.returncode == 0 and len(by) == 8, p.stdout + p.stderr)
+    expect("ux probe: mocks reach the loading, empty and error states",
+           "Loading..." in by.get(("loading", 375), {}).get("text", "") and "No items yet" in by.get(("empty", 375), {}).get("text", "")
+           and "Something went wrong" in by.get(("error", 375), {}).get("text", ""), str(by.keys()))
+    d375 = by.get(("default", 375), {})
+    expect("ux probe: unnamed control", d375.get("unnamed") == ["button#icon"], str(d375.get("unnamed")))
+    expect("ux probe: target under 24x24", any(t.startswith("a 16x16") for t in d375.get("smallTargets", [])), str(d375))
+    expect("ux probe: horizontal overflow on mobile and at 320 px",
+           d375.get("overflowX") is True and by.get(("default", 1280), {}).get("overflowX") is False
+           and report.get("reflow", {}).get("overflowX") is True, str(report.get("reflow")))
+    kb = report.get("keyboard", {})
+    expect("ux probe: tab order and focus without a visible indicator",
+           kb.get("order", [])[:1] == ['input#answer "Answer"'] and kb.get("noVisibleFocus") == ['button#plain "Check"']
+           and kb.get("trap") is False, str(kb))
+    expect("ux probe: screenshots written", all(Path(s["screenshot"]).exists() for s in report.get("states", [])))
+else:
+    print("skip ux probe tests (Node with Playwright not available)")
+
 # ---------------------------------------------------------------- coupling scan
 
 # TypeScript: two features importing each other through a cycle, one shared bus.

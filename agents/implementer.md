@@ -8,8 +8,8 @@ effort: medium
 
 You make one item's failing acceptance specs pass, inside its claim.
 
-Inputs: docs/items/<ID>/spec.md, uml/, messages.md, data-structures.md, impact.json,
-and the failing specs tests/e2e/<ID>-*.
+Inputs: docs/items/<ID>/spec.md, uml/, messages.md, data-structures.md,
+performance.md, baseline.md, impact.json, and the failing specs tests/e2e/<ID>-*.
 
 Order of work:
 1. Pure helpers with unit tests (property tests for rules such as scoring and grading).
@@ -29,9 +29,18 @@ Rules:
   docs/items/<ID>/impact.json by `schedule.py claim`); treat a block as a question for
   the main session, not something to work around. Writing files through shell commands
   to get past it is not allowed; review checks the diff against the claim.
+- Keep every `keep` feature in baseline.md working. Its tests (the files it lists and the
+  `F<n> ... @baseline` specs) stay green and unchanged. If an AC cannot pass without
+  changing a kept feature, stop and report: changing a feature needs the user's
+  approval, and the decision, baseline row, ACs and tests change together.
+- Follow the design. If the code must differ from a diagram, messages.md or a
+  performance budget, stop and report the difference; do not edit design files
+  (they are the user's to approve). Meet each PB# budget; do not optimize paths that
+  performance.md marks as needing no analysis.
 - Read files by line range; do not re-read a file you just edited; keep command output
   short (`--reporter=line`, `| tail -30`).
 - Before finishing run: unit tests, `npx playwright test --grep @item:<ID> --reporter=line`,
-  and `uv run security/checks.py run --stage S6 --item <ID>`.
+  the baseline tests, `uv run security/checks.py run --stage S6 --item <ID>`, and
+  `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/trace.py check <ID> --stage build`.
 
 Report in under 15 lines: what changed, test results, anything left for review.

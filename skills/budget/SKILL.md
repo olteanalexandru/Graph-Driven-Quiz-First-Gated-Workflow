@@ -10,13 +10,16 @@ effort: low
 Item: `$0` when it looks like an item ID, otherwise the item on the current branch.
 Settings for each level are in `.flow/config.json` under `budgets`.
 
-Show, in under 12 lines:
+Show, in under 14 lines:
 - level and what it is for;
 - the session command, run in the item's worktree:
   `claude --model <model> --effort <effort> --autocompact <tokens>`;
 - subagent models per stage (`null` = the main session does that stage itself, with
   the rules in `${CLAUDE_PLUGIN_ROOT}/agents/<name>.md`);
-- reading limit, impact depth, gate tests (`stop_checks`), handoff point (% context).
+- planning effort (`planning_effort`; `max` when the spec says `complex: true`);
+- reading limit, impact depth, gate tests (`stop_checks`), handoff point (% context);
+- the level's cost estimate and the global budget left
+  (`python3 ${CLAUDE_PLUGIN_ROOT}/scripts/schedule.py usage`).
 
 To change it (a level was given): set `budget:` in docs/items/<ID>/spec.md and append to
 its Budget log `<date> <old> -> <new>: <reason>`. Then apply it the cheap way:
@@ -35,3 +38,8 @@ Raise the budget one level only on these triggers, and log which one:
 5. the user asks.
 Budgets do not carry over: every new item starts at its own level (tier S lean, tier M
 standard, deep when it touches auth, payments or RLS).
+
+A raise that would take the expected spend past the global budget
+(`orchestration.cost_budget_usd` in .flow/config.json) needs the user's yes first; so
+does any claim past the WIP limit, the 5-hour floor or the budget (`claim --force`).
+Hard limits are never passed on an agent's own decision.

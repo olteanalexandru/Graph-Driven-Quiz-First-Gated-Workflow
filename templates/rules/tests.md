@@ -7,6 +7,8 @@ paths:
 ---
 # Test rules
 - Playwright titles: `AC<n> <behavior> @item:<ID>`, plus tags such as @smoke, @security, @rls, @audio-<name>, @visual, @ro.
+- Kept features: `F<n> <behavior> @baseline @item:<ID>`, written before the change and passing on today's code. Performance budgets: `PB<n> <path> within <budget> @perf @item:<ID>`. UX fixes: `@ux`.
+- Never change an existing test's expected values to make a change pass; that is a feature change and needs the user's approval.
 - New spec files are named with the item ID: tests/e2e/<ID>-<flow>.spec.ts.
 - Locators: getByRole and getByLabel first; data-testid for SVG and canvas parts.
 - Import message builders from src/bus/domains/<domain>/messages.ts instead of writing message literals; assert bus events through window.__appBus.log.

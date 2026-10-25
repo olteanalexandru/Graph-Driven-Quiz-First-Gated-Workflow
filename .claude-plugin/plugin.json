@@ -1,8 +1,8 @@
 {
   "name": "flow",
   "displayName": "Graph-Driven Quiz-First Gated Workflow",
-  "version": "0.1.0",
-  "description": "Quiz-first, graph-checked, Playwright-gated workflow for Claude Code: one writer per item, conflict-free parallel items, a typed message bus, security checks by stack, an adaptive token budget, and a refactor mode for existing codebases.",
+  "version": "0.2.0",
+  "description": "Quiz-first, graph-checked, Playwright-gated workflow for Claude Code: quick or deep clarification, an editable design that keeps your edits, feature baselines, component UX audits, one writer per item, token-aware parallel items with an integration gate, a typed message bus, security checks by stack, an adaptive token budget, and a refactor mode for existing codebases.",
   "author": {
     "name": "olteanalexandru",
     "url": "https://github.com/olteanalexandru"
@@ -10,5 +10,5 @@
   "homepage": "https://github.com/olteanalexandru/Graph-Driven-Quiz-First-Gated-Workflow",
   "repository": "https://github.com/olteanalexandru/Graph-Driven-Quiz-First-Gated-Workflow",
   "license": "MIT",
-  "keywords": ["workflow", "graphify", "playwright", "uml", "security", "refactor", "token-budget"]
+  "keywords": ["workflow", "graphify", "playwright", "uml", "security", "refactor", "token-budget", "ux-audit", "accessibility", "orchestration"]
 }
