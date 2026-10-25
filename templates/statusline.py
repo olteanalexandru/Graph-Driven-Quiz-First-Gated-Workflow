@@ -18,7 +18,8 @@ from pathlib import Path
 
 def git(cwd, *args):
     try:
-        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=2)
+        p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=2,
+                           encoding="utf-8", errors="replace")
         return p.stdout.strip() if p.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -52,6 +53,11 @@ def write_usage(cwd, data, item, level):
     path = path / "flow-usage" / f"{session}.json"
     try:
         old = json.loads(path.read_text("utf-8")) if path.exists() else {}
+        today = time.strftime("%Y-%m-%d")
+        # Cost at the start of today, so a session that began yesterday counts only today's spend.
+        rec["day"] = today
+        rec["day_base_cost"] = (old.get("day_base_cost") if old.get("day") == today
+                                else (old.get("cost_usd") or 0) if old else 0)
         old.pop("updated", None)
         if old == rec:
             return
@@ -66,8 +72,8 @@ def write_usage(cwd, data, item, level):
 
 def main():
     try:
-        data = json.load(sys.stdin)
-    except json.JSONDecodeError:
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")
+    except ValueError:
         data = {}
     cwd = data.get("cwd") or (data.get("workspace") or {}).get("current_dir") or "."
     parts = []

@@ -84,7 +84,8 @@ def design_guard(data, root, item, sub):
     if data.get("permission_mode") in NO_PROMPT_MODES:
         script = lib.shell_quote(PLUGIN_ROOT / "scripts" / "design.py")
         sys.stderr.write(f"[flow] {reason}. Ask the user in chat before changing it. If they agree, run "
-                         f"`python3 {script} unlock {item} {sub}` and retry.\n")
+                         f"`python3 {script} unlock {item} {sub}` and retry. A subagent cannot ask: report the file and the "
+                         f"intended change in your final message and do not retry.\n")
         return 2
     emit({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
                                  "permissionDecisionReason": f"[flow] {reason}. Allow only if this change "
@@ -232,8 +233,6 @@ def bash_problems(command, base, branch):
 def pre_bash(data, root, cfg):
     command = (data.get("tool_input") or {}).get("command") or ""
     found = bash_problems(command, cfg.get("base_branch", "main"), lib.current_branch(root))
-    if found:
-        return problem(cfg, "PreToolUse", "; ".join(found) + ". Ask the user to run it if it is really needed.")
     design = sorted(set(DESIGN_PATH.findall(command)))
     if design and SHELL_WRITE.search(command):
         reason = (f"this shell command changes design files ({', '.join(design)}). Shell writes are not recorded, "
@@ -243,6 +242,8 @@ def pre_bash(data, root, cfg):
             return 2
         emit({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
                                      "permissionDecisionReason": f"[flow] {reason}. Allow only if you want this change."}})
+    if found:
+        return problem(cfg, "PreToolUse", "; ".join(found) + ". Ask the user to run it if it is really needed.")
     return 0
 
 
@@ -316,7 +317,8 @@ def stop(data, root, cfg):
             missing.append(f"{cmd} (no time left)")
             continue
         try:
-            p = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=left)
+            p = subprocess.run(cmd, shell=True, cwd=root, capture_output=True, text=True, timeout=left,
+                               encoding="utf-8", errors="replace")
             if p.returncode == 127:                   # the tool is not installed: warn, do not block
                 missing.append(cmd)
             elif p.returncode != 0:
@@ -412,17 +414,17 @@ def main(argv):
         sys.stderr.write(f"flow_hook: unknown event {event!r}\n")
         return 1
     try:
-        data = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        data = {}
-    start = data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or "."
-    root = lib.repo_root(start)
-    cfg = lib.load_config(root)
-    if cfg is None:
-        return 0
-    if cfg.get("_error") and event in ("pre-edit", "pre-bash"):
-        emit({"systemMessage": f"[flow warn] {cfg['_error']}"})
-    try:
+        try:
+            data = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")
+        except ValueError:
+            data = {}
+        start = data.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or "."
+        root = lib.repo_root(start)
+        cfg = lib.load_config(root)
+        if cfg is None:
+            return 0
+        if cfg.get("_error") and event in ("pre-edit", "pre-bash"):
+            emit({"systemMessage": f"[flow warn] {cfg['_error']}"})
         code = handlers[event](data, root, cfg)
     except Exception as e:                            # a crash must not wave an edit through unchecked
         reason = f"[flow] the {event} hook failed ({type(e).__name__}: {e})"

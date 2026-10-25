@@ -88,12 +88,27 @@ def uses_changes_of(a, b):
 
 
 def implicit_deps(units):
-    """The item that uses a contract goes after the item that changes it (not when both use each other's)."""
+    """The item that uses a contract goes after the item that changes it, unless that would close a cycle
+    with the explicit or earlier implicit order (the hard conflict check still keeps such a pair apart)."""
+    graph = {u["id"]: set(as_list(u.get("deps"))) for u in units}
     out = {u["id"]: set() for u in units}
+
+    def reaches(start, goal):
+        seen, stack = set(), [start]
+        while stack:
+            node = stack.pop()
+            if node == goal:
+                return True
+            if node not in seen:
+                seen.add(node)
+                stack.extend(graph.get(node, ()))
+        return False
+
     for a in units:
         for b in units:
-            if a["id"] != b["id"] and uses_changes_of(a, b) and not uses_changes_of(b, a):
+            if a["id"] != b["id"] and uses_changes_of(a, b) and not reaches(b["id"], a["id"]):
                 out[a["id"]].add(b["id"])
+                graph[a["id"]].add(b["id"])
     return out
 
 
@@ -177,7 +192,7 @@ def cmd_next(root, cfg, args):
         if soft:
             blocked.append((cand["id"], "run after " + "; ".join(f"{o}: {why[0]}" for o, why in soft)))
             continue
-        est, _ = cap["estimate"](level_of(cfg, cand))
+        est = cap["start_cost"](level_of(cfg, cand))
         if remaining is not None and remaining < est:
             blocked.append((cand["id"], f"budget: needs about ${est:.2f}, ${max(remaining, 0):.2f} left this {cap['window']}"))
             continue
@@ -292,7 +307,7 @@ def cmd_claim(root, cfg, args):
                 print(f"the 5-hour window is at {cap['five_hour_pct']:.0f}% (keeping {cap['rate_floor']:.0f}% free); "
                       f"not claimed. The user can approve it with --force")
                 return 1
-            est, source = cap["estimate"](level_of(cfg, claim))
+            est, source = cap["start_cost"](level_of(cfg, claim)), cap["estimate"](level_of(cfg, claim))[1]
             if cap["remaining"] is not None and cap["remaining"] < est:
                 print(f"{args.item} needs about ${est:.2f} ({source}) and ${max(cap['remaining'], 0):.2f} is left "
                       f"in this {cap['window']}'s budget; not claimed. The user can approve it with --force")

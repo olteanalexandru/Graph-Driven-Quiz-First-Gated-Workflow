@@ -101,7 +101,8 @@ The stages and the rules behind them: [docs/flow.md](docs/flow.md).
   enforce mode a failure sends Claude back to fix it; in warn mode it is reported.
 - **Contract**: an API route, table, bus message, config key, store or shared UI
   component an item changes or uses (`api:`, `schema:`, `bus:`, `config:`, `state:`,
-  `ui:` in impact.json). Two items never change or use the same one at once.
+  `ui:` in impact.json). An item that changes one never runs beside another that changes
+  or uses it; items that only use it can run together.
 - **Baseline**: what the code an item touches does today (F#), with its tests. Kept
   features must keep working; changes need a decision.
 - **Design lock**: `docs/items/<ID>/design.lock.json`, where the hooks note what Claude
@@ -126,8 +127,10 @@ The stages and the rules behind them: [docs/flow.md](docs/flow.md).
 1. Run `/flow:init` on a `workflow-setup` branch. It adds its own files and merges short
    blocks into CLAUDE.md, `.claude/settings.json`, `.gitignore`, package.json and
    next.config, showing each change; it never overwrites a file you wrote. It starts in
-   `warn` mode: the hooks report problems but block nothing, so old code does not trip
-   them on every edit.
+   `warn` mode: claim, spec and git-safety problems are reported, not blocked, so old
+   code does not trip them on every edit. The design guard still asks before Claude
+   changes a design file you edited or approved, and design.lock.json changes only
+   through design.py.
 2. Run `/flow:refactor-scan`. It measures imports that cross feature boundaries, import
    cycles, the most imported files, string-keyed messaging, flows without tests and
    security findings, and writes a backlog to `docs/refactor/`.

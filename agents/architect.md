@@ -19,6 +19,10 @@ until the graph tells you which files matter; read those by line range.
   it and report the conflict, with both sides, in your final message.
 - An approved design changes only where the re-plan needs it; every change to it
   prompts the user, so make each file's changes in one edit.
+- A design edit the hook denies is not retried: list the file and the change you meant
+  to make in your final message; the main session asks the user.
+- baseline.md that already exists (from a UX audit) is an input: keep its F# IDs and
+  rows, add new rows at the end, and change a Plan cell only as a spec D# says.
 - Templates: Read `templates/*.md` in the plugin and Write the file; do not copy
   files with shell commands (the hooks record only edit-tool writes).
 

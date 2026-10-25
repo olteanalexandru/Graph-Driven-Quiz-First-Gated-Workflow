@@ -43,7 +43,8 @@ ESTIMATE_USD = {"lean": 2.0, "standard": 8.0, "deep": 25.0}   # until 3 shipped 
 
 def git(cwd, *args):
     try:
-        p = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=30)
+        p = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=30,
+                           encoding="utf-8", errors="replace")
     except (OSError, subprocess.TimeoutExpired):
         return None
     return p.stdout.strip() if p.returncode == 0 else None
@@ -368,8 +369,17 @@ def split_item_doc(rel):
     return (m.group(1), m.group(2)) if m else (None, None)
 
 
+UML_EXT = (".mmd", ".md")
+
+
 def is_design_file(sub):
-    return bool(sub) and (sub in DESIGN_DOCS or (sub.startswith("uml/") and not sub.endswith("/")))
+    """Design docs, and Mermaid or Markdown files under uml/ (not .DS_Store, swap files or rendered SVGs)."""
+    if not sub:
+        return False
+    if sub in DESIGN_DOCS:
+        return True
+    parts = sub.split("/")
+    return parts[0] == "uml" and len(parts) > 1 and sub.endswith(UML_EXT) and not any(x.startswith(".") for x in parts)
 
 
 def text_hash(path):
@@ -382,7 +392,8 @@ def design_files(root, item):
     d = item_dir(root, item)
     found = [name for name in DESIGN_DOCS if (d / name).is_file()]
     if (d / "uml").is_dir():
-        found += sorted(p.relative_to(d).as_posix() for p in (d / "uml").rglob("*") if p.is_file())
+        found += sorted(r for r in (p.relative_to(d).as_posix() for p in (d / "uml").rglob("*") if p.is_file())
+                        if is_design_file(r))
     return found
 
 
@@ -397,7 +408,9 @@ def load_lock(root, item):
             lock = {"_error": f"{path.name} is not valid JSON"}
     if not isinstance(lock, dict):
         lock = {"_error": f"{path.name} is not a JSON object"}
-    shapes = {"files": dict, "approved": (dict, type(None)), "unlocked": list}
+    if isinstance(lock.get("unlocked"), list):          # older locks: an unlock without a hash is not honoured
+        lock["unlocked"] = {}
+    shapes = {"files": dict, "approved": (dict, type(None)), "unlocked": dict}
     bad = [k for k, t in shapes.items() if k in lock and not isinstance(lock[k], t)]
     if bad or not all(isinstance(v, str) for v in (lock.get("files") or {}).values()):
         lock = {"_error": f"{path.name} has an unexpected shape ({', '.join(bad) or 'files'})"}
@@ -406,7 +419,7 @@ def load_lock(root, item):
     lock.setdefault("item", item)
     lock.setdefault("files", {})
     lock.setdefault("approved", None)
-    lock.setdefault("unlocked", [])
+    lock.setdefault("unlocked", {})
     return lock
 
 
@@ -446,7 +459,8 @@ def design_state(root, item):
     else:
         status = "draft" if current else "none"
     return {"status": status, "hand_edited": hand, "changed": changed, "files": current,
-            "approved_at": (approved or {}).get("at"), "unlocked": lock.get("unlocked") or [],
+            "approved_at": (approved or {}).get("at"),
+            "unlocked": [f for f, h in (lock.get("unlocked") or {}).items() if current.get(f) == h],
             "error": lock.get("_error")}
 
 
@@ -464,7 +478,7 @@ def record_design_write(root, item, sub):
         if lock.get("approved"):
             lock["approved"].setdefault("files", {})[sub] = h
             lock["approved"]["amended"] = now_iso()
-    lock["unlocked"] = [f for f in lock.get("unlocked") or [] if f != sub]
+    lock["unlocked"].pop(sub, None)
     save_lock(root, item, lock)
 
 
@@ -475,14 +489,17 @@ def approve_design(root, item, note=""):
     lock["approved"] = {"at": now_iso(), "files": dict(state["files"])}
     if note:
         lock["approved"]["note"] = note
-    lock["unlocked"] = []
+    lock["unlocked"] = {}
     save_lock(root, item, lock)
     return state
 
 
 def unlock_design(root, item, subs):
+    """One Claude edit per file, valid only while the file keeps the content the user agreed on."""
     lock = load_lock(root, item)
-    lock["unlocked"] = sorted(set(lock.get("unlocked") or []) | set(subs))
+    d = item_dir(root, item)
+    for f in subs:
+        lock["unlocked"][f] = text_hash(d / f) if (d / f).is_file() else None
     save_lock(root, item, lock)
 
 
@@ -605,7 +622,8 @@ def integration_partners(root, cfg, item):
         if other == item:
             continue
         text = git(root, "show", f"{other}:docs/items/{other}/review.md")
-        if text and verdict_pass(text):
+        spec = parse_frontmatter(git(root, "show", f"{other}:docs/items/{other}/spec.md") or "")
+        if text and verdict_pass(text) and spec.get("status") != "done":     # done: shipping, already integrated
             partners.append(other)
     return sorted(partners)
 
@@ -709,7 +727,15 @@ def capacity(root, cfg, items, claims, now=None):
     start = window_start(window, now)
     in_window = [r for r in records if float(r.get("updated") or 0) >= start]
     live = bool(records)
-    spent = sum(float(r.get("cost_usd") or 0) for r in in_window)
+    today = dt.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+
+    def window_cost(r):
+        cost = float(r.get("cost_usd") or 0)
+        if window == "day" and r.get("day") == today:              # a session that began yesterday
+            cost -= float(r.get("day_base_cost") or 0)
+        return max(cost, 0.0)
+
+    spent = sum(window_cost(r) for r in in_window)
     by_item = {}
     for r in records:
         if r.get("item"):
@@ -730,4 +756,5 @@ def capacity(root, cfg, items, claims, now=None):
     return {"budget": budget, "window": window, "spent": round(spent, 2), "committed": round(committed, 2),
             "remaining": remaining, "live": live, "five_hour_pct": five, "rate_floor": floor,
             "rate_blocked": five is not None and five >= 100 - floor, "by_item": by_item,
-            "estimate": lambda level: level_estimate(root, cfg, level, history)}
+            "estimate": lambda level: level_estimate(root, cfg, level, history),
+            "start_cost": lambda level: level_estimate(root, cfg, level, history)[0] * (1 if live else factor)}

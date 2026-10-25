@@ -384,7 +384,7 @@ design("unlock", "ITEM-001", "uml/sequence-award.mmd")
 code, out, err = edit(UML, mode="bypassPermissions")
 expect("design guard: unlock allows the edit", code == 0, err)
 post(UML)
-expect("design post-edit uses up the unlock", json.loads((D1 / "design.lock.json").read_text())["unlocked"] == [])
+expect("design post-edit uses up the unlock", json.loads((D1 / "design.lock.json").read_text())["unlocked"] == {})
 code, out, err = edit(UML)
 expect("design guard: after Claude's write the file is a draft again", "permissionDecision" not in out, out)
 
@@ -408,6 +408,17 @@ write(UML, (D1 / "uml/sequence-award.mmd").read_text().replace("\n", "\r\n"), ro
 st2 = json.loads(design("status", "ITEM-001", "--json").stdout)
 expect("design: CRLF line endings are not an edit", st2["files"] == st["files"], str(st2))
 
+design("unlock", "ITEM-001", "uml/sequence-award.mmd")
+write(UML, (D1 / "uml/sequence-award.mmd").read_text() + "  Note over C: edited after the unlock\n", root=wt)
+code, out, err = edit(UML, mode="bypassPermissions")
+expect("design guard: an unlock stops counting once the user edits the file again", code == 2, err)
+write("docs/items/ITEM-001/uml/.DS_Store", "junk", root=wt)
+write("docs/items/ITEM-001/uml/sequence-award.svg", "<svg/>", root=wt)
+st = json.loads(design("status", "ITEM-001", "--json").stdout)
+expect("design: junk and rendered files under uml/ are not design files",
+       not any(f.endswith((".DS_Store", ".svg")) for f in st["files"]), str(st["files"]))
+(D1 / "uml/.DS_Store").unlink()
+(D1 / "uml/sequence-award.svg").unlink()
 code, out, err = edit("docs/items/ITEM-001/design.lock.json")
 expect("design lock: Claude's edit tools may not change it", code == 2 and "design.py approve" in err, err)
 code, out, err = bash("echo '{}' > docs/items/ITEM-001/design.lock.json")
@@ -629,7 +640,8 @@ write(".flow/config.json", json.dumps(ocfg), root=orch)
 p = osched("next")
 expect("capacity: without usage data active items count at 1.5x their estimate",
        "no live data" in p.stdout and "expected to need $24.00" in p.stdout, p.stdout)
-expect("capacity: a start that would pass the budget waits", "wait: ITEM-013: budget: needs about $25.00" in p.stdout, p.stdout)
+expect("capacity: a start that would pass the budget waits, priced like an active item (1.5x without data)",
+       "wait: ITEM-013: budget: needs about $37.50" in p.stdout, p.stdout)
 p = osched("claim", "ITEM-013")
 expect("capacity: claim refused past the budget without --force", p.returncode == 1 and "--force" in p.stdout, p.stdout)
 

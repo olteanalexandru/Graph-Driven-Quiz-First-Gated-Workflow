@@ -58,8 +58,11 @@ function inspect({ root, selector }) {
     const wrapped = el.closest('label')?.textContent;
     const img = el.querySelector('img[alt]')?.getAttribute('alt');
     const svg = el.querySelector('svg title')?.textContent;
-    return (el.getAttribute('aria-label') || labelled || label || wrapped || el.innerText || el.value ||
-      el.getAttribute('title') || img || svg || el.getAttribute('placeholder') || '').trim();
+    const fromContent = /^(BUTTON|A|SUMMARY)$/.test(el.tagName) ||
+      /^(button|link|tab|option|menuitem|checkbox|radio|switch)$/.test(el.getAttribute('role') || '');
+    const buttonInput = el.tagName === 'INPUT' && /^(button|submit|reset)$/.test(el.type);
+    return (el.getAttribute('aria-label') || labelled || label || wrapped || (fromContent ? el.innerText : '') ||
+      (buttonInput ? el.value : '') || el.getAttribute('title') || img || svg || el.getAttribute('placeholder') || '').trim();
   };
   const controls = [...scope.querySelectorAll(selector)].filter(visible);
   const unnamed = controls.filter((el) => !nameOf(el)).map(describe);
@@ -82,10 +85,20 @@ function inspect({ root, selector }) {
 function focusInfo({ root }) {
   const el = document.activeElement;
   if (!el || el === document.body) return null;
+  const look = (e) => {
+    const st = getComputedStyle(e);
+    const outline = st.outlineStyle !== 'none' && parseFloat(st.outlineWidth) > 0 &&
+      !/rgba\(.*,\s*0\)|transparent/.test(st.outlineColor) ? `${st.outlineStyle} ${st.outlineWidth} ${st.outlineColor}` : '';
+    return [outline, st.boxShadow, st.borderColor, st.borderWidth, st.backgroundColor, st.color, st.textDecorationLine].join('|');
+  };
+  const focused = look(el);
+  el.blur();
+  const before = look(el);
+  el.focus({ focusVisible: true });
   if (!el.__flowUid) el.__flowUid = (window.__flowNext = (window.__flowNext || 0) + 1);
-  const s = getComputedStyle(el);
   const r = el.getBoundingClientRect();
-  const ring = (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) || (s.boxShadow && s.boxShadow !== 'none');
+  // Visible means the element looks different from its unfocused self, not merely that it has a shadow.
+  const ring = focused !== before;
   const cx = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1);
   const cy = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1);
   const top = document.elementFromPoint(cx, cy);
@@ -107,7 +120,11 @@ async function applyMocks(page, mocks = []) {
     await page.route(m.url, async (route) => {
       if (m.action === 'hang') return;                         // never answers: the loading state
       if (m.action === 'json') return route.fulfill({ status: m.status || 200, contentType: 'application/json', body: JSON.stringify(m.body ?? []) });
-      if (m.action === 'status') return route.fulfill({ status: m.status || 500, body: m.body || '' });
+      if (m.action === 'status') {
+        const json = m.body !== undefined && typeof m.body !== 'string';
+        return route.fulfill({ status: m.status || 500, body: json ? JSON.stringify(m.body) : (m.body || ''),
+          contentType: json ? 'application/json' : 'text/plain' });
+      }
       return route.continue();
     });
   }
@@ -248,10 +265,14 @@ async function main() {
     const { context, page } = await open(browser, cfg, first, [width, 640], { isMobile: false, hasTouch: false });
     report.reflow = { width, overflowX: (await page.evaluate(inspect, { root: cfg.root, selector: CONTROLS })).overflowX };
     await context.close();
-    const reduced = await open(browser, cfg, first, wide, { reducedMotion: 'reduce' });
-    report.reducedMotion = { runningAnimations: await reduced.page.evaluate(() =>
-      document.getAnimations().filter((a) => a.playState === 'running').length) };
-    await reduced.context.close();
+    try {
+      const reduced = await open(browser, cfg, first, wide, { reducedMotion: 'reduce' });
+      report.reducedMotion = { runningAnimations: await reduced.page.evaluate(() =>
+        document.getAnimations().filter((a) => a.playState === 'running').length) };
+      await reduced.context.close();
+    } catch (e) {
+      report.reducedMotion = { error: String(e.message || e).slice(0, 300), runningAnimations: null };
+    }
     console.log(`reflow ${width}px: overflow ${report.reflow.overflowX ? 'yes' : 'no'}; ` +
       `reduced motion: ${report.reducedMotion.runningAnimations} animations still running`);
   } catch (e) {

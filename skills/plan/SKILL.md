@@ -12,11 +12,15 @@ being built, run this in its worktree instead: the claim is refreshed in step 11
 Every design file is editable by the user, and their edits win: the hooks ask before
 Claude changes a file the user edited by hand, or any file of an approved design.
 
-1. Read docs/items/$0/spec.md. Stop if `status` is not `approved`. Note `tier`,
+1. Read docs/items/$0/spec.md. Stop if `status` is `draft` or `done` (a re-plan in the
+   worktree keeps `in-progress`). Note `tier`,
    `budget`, `clarify` and `complex`. Read that budget in `.flow/config.json`.
 2. Effort: planning is complex when `complex: true`, the budget is deep, or step 5
    finds it so. Complex planning runs at effort `max` (Claude Code uses the highest
-   level the model supports); otherwise at the budget's `planning_effort`.
+   level the model supports); otherwise at the budget's `planning_effort`. Pass it as
+   the Agent tool's `effort` for the architect. When planning happens in this session
+   (null model, or an Agent tool without an effort setting), ask the user to run
+   `/effort <level>` first.
 3. Re-planning (design files exist): run
    `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/design.py status $0` and
    `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/trace.py check $0 --stage plan --drift`.
@@ -32,8 +36,9 @@ Claude changes a file the user edited by hand, or any file of an approved design
    hand edits, and drift between diagrams and code.
 5. Size and budget, from the architect's report:
    - past `split_at` in .flow/config.json (nodes or domains): stop and propose a split
-     into smaller items with deps and contracts; on the user's yes, they go through
-     `/flow:quiz` one by one;
+     into smaller items with deps and contracts; on the user's yes, set this spec back
+     to `status: draft`, delete its impact.json so the scheduler cannot start it, and
+     quiz the parts one by one with `/flow:quiz`;
    - more than 2 domains or about 25 nodes, or security blockers for auth, payments or
      RLS: raise the budget one level, add a line to the spec's Budget log, set
      `complex: true`, and if step 4 ran below `max`, run the architect once more at
@@ -41,6 +46,8 @@ Claude changes a file the user edited by hand, or any file of an approved design
 6. Conflicts and drift: for each conflict with a hand-edited file, and each drift where
    the code and a diagram disagree, ask the user which side wins (AskUserQuestion).
    The losing side is updated; a hand-edited file changes only with the user's yes.
+   Design edits the hook denied the architect (it lists them in its report): ask the
+   user, and on yes run `design.py unlock $0 <file>` and make the edit in this session.
 7. Features: for each baseline row the architect proposes to change or remove, ask the
    user (keep / change as proposed / remove). Record each yes as a D# row in the spec,
    then set the row's plan to `change (D#)` or `remove (D#)`. Never change or remove a

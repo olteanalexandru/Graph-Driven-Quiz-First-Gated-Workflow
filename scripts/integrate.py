@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -47,6 +49,30 @@ def load_run(root, run_id):
 
 def head_of(root, item):
     return lib.branch_head(root, item)
+
+
+def run_check(cmd, cwd, timeout):
+    """Run one check in its own process group with CI set, so it starts its own server and a timeout
+    kills everything it started. Returns (ok, output)."""
+    env = {k: v for k, v in os.environ.items() if k not in ("BASE_URL", "PLAYWRIGHT_BASE_URL", "PORT")}
+    env.update({"CI": "1", "FLOW_INTEGRATION": "1"})
+    kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    p = subprocess.Popen(cmd, shell=True, cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, encoding="utf-8", errors="replace", **kw)
+    try:
+        out, _ = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
+        else:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        p.communicate()
+        return False, "timed out"
+    out = tail(out)
+    return p.returncode == 0, ("tool not installed\n" + out) if p.returncode == 127 else out
 
 
 def tail(text, n=25):
@@ -85,7 +111,7 @@ def cmd_run(root, cfg, args):
            "order": items, "conflicts": [], "checks": [], "review": None, "worktree": str(wt)}
     for item in items:
         p = subprocess.run(["git", *MERGE_IDENTITY, "merge", "--no-ff", "--no-edit", "-m", f"integrate {item}",
-                            heads[item]], cwd=str(wt), capture_output=True, text=True)
+                            heads[item]], cwd=str(wt), capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode != 0:
             files = (lib.git(wt, "diff", "--name-only", "--diff-filter=U") or "").splitlines()
             lib.git(wt, "merge", "--abort")
@@ -100,13 +126,7 @@ def cmd_run(root, cfg, args):
         timeout = int(cfg.get("integration_timeout", 1800))
         for cmd in checks:
             cmd = cmd.replace("{grep}", grep)
-            try:
-                p = subprocess.run(cmd, shell=True, cwd=str(wt), capture_output=True, text=True, timeout=timeout)
-                ok, out = p.returncode == 0, tail(p.stdout + "\n" + p.stderr)
-                if p.returncode == 127:
-                    out = "tool not installed\n" + out
-            except subprocess.TimeoutExpired:
-                ok, out = False, "timed out"
+            ok, out = run_check(cmd, wt, timeout)
             run["checks"].append({"cmd": cmd, "ok": ok, "tail": "" if ok else out})
     failed = run["conflicts"] or not all(c["ok"] for c in run["checks"])
     run["verdict"] = "BLOCK" if failed else "REVIEW"
