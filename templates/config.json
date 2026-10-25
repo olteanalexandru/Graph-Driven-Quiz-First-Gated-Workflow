@@ -1,0 +1,55 @@
+{
+  "mode": "warn",
+  "base_branch": "main",
+  "wip_limit": 2,
+  "item_pattern": "ITEM-\\d+",
+  "hot_files": {
+    "bus-registry": ["src/bus/messages.ts", "src/bus/dispatch.ts"],
+    "dependencies": ["package.json", "pnpm-lock.yaml", "package-lock.json", "Cargo.toml", "Cargo.lock"],
+    "app-shell": ["src/app/layout.tsx", "next.config.ts", "next.config.mjs", "src/proxy.ts", "src/middleware.ts"],
+    "test-fixtures": ["tests/e2e/fixtures/"]
+  },
+  "domains": {},
+  "shared": ["src/bus", "src/helpers", "src/components/ui", "src/lib"],
+  "aliases": {"@/": "src/"},
+  "stop_checks": [],
+  "budget_default": "standard",
+  "budgets": {
+    "lean": {
+      "for": "tier S: small fixes, copy changes, config",
+      "session": {"model": "sonnet", "effort": "low", "autocompact": 150000},
+      "agents": {"architect": null, "e2e-author": null, "implementer": null, "reviewer": "haiku"},
+      "read_limit": "graph first, then at most 3 files, by line range",
+      "impact": "direct callers and callees only",
+      "stop_checks": [
+        "npm run -s --if-present test",
+        "npx playwright test --grep @item:{item} --reporter=line --max-failures=1 --pass-with-no-tests"
+      ],
+      "handoff_at": 40
+    },
+    "standard": {
+      "for": "tier M: features and refactor items",
+      "session": {"model": "sonnet", "effort": "medium", "autocompact": 250000},
+      "agents": {"architect": "opus", "e2e-author": "sonnet", "implementer": "sonnet", "reviewer": "sonnet"},
+      "read_limit": "graph first, then up to 8 files, by line range",
+      "impact": "direct callers and callees plus one hop of importers",
+      "stop_checks": [
+        "npm run -s --if-present test",
+        "npx playwright test --grep \"@item:{item}|@smoke\" --reporter=line --max-failures=3 --pass-with-no-tests"
+      ],
+      "handoff_at": 60
+    },
+    "deep": {
+      "for": "auth, payments, RLS, cross-domain changes, escalated items",
+      "session": {"model": "opus", "effort": "high", "autocompact": 400000},
+      "agents": {"architect": "opus", "e2e-author": "sonnet", "implementer": "opus", "reviewer": "opus"},
+      "read_limit": "graph first, then what the design needs",
+      "impact": "one hop of importers plus a second hop of callers, ranked with impact_and_risk",
+      "stop_checks": [
+        "npm run -s --if-present test",
+        "npx playwright test --reporter=line --max-failures=5"
+      ],
+      "handoff_at": 75
+    }
+  }
+}

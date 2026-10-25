@@ -1,0 +1,1425 @@
+# Vulnerability check registry for the Claude Code workflow.
+#
+# One list for every project. Each check says which stack tags it needs, which
+# environments it protects, where in the flow it runs and how it is verified.
+# security/checks.py picks the checks that apply to a project (stack tags) and to
+# an item (files it touches). See security/README.md.
+#
+# Check fields
+#   id        stable ID; cite it in specs, reviews and commits
+#   title     one line
+#   tech      tags that must ALL be in the stack (omit = any project)
+#   deploy    deploy targets that must ALL be in the stack (omit = any)
+#   env       environments it protects: dev | ci | preview | prod (omit = all four)
+#   owasp     OWASP Top 10:2025 category, where one fits
+#   severity  blocker = must pass to merge | high = pass or record an exception | medium = warning
+#   stage     S1 quiz | S2 design | S4 acceptance specs | S6 test gate | S7 review | S8 merge | weekly
+#   paths     globs; at S4/S6/S7 the check is picked only if the item touches a match
+#   content   regex; at S4/S6/S7 the check is picked only if a touched file contains a match
+#             (paths and content together: the same file must match both)
+#   check     what must be true, in plain words (for S1: the question to ask)
+#   grep      built-in static rule (forbid | require | present, see README)
+#   run       shell command, exit 0 = pass; {{var}} is replaced from vars
+#   builtin   floors = compare installed versions with the floors below
+#   mcp       platform check the agent runs through an MCP tool
+#   refs      sources
+# A check with no grep, run or builtin is manual: it becomes a checkbox in the item's
+# security.md (S1, S2, S4, S7) or in the weekly list.
+
+version: 1
+
+vars:
+  base_ref: origin/main
+  # Calls that count as an auth check at the top of a server action.
+  auth_guard: 'requireUser\(|requireSession\(|requireAdmin\(|auth\.getClaims\(|auth\.getUser\('
+  # Name of the test-only window hook from the Playwright design (the bus template uses window.__appBus).
+  test_hook: '__\w+Bus\b'
+  # Sending domain for MAIL-02, release image for DOCKER-03. Set in security/stack.yaml.
+  mail_domain: ''
+  image: ''
+
+detect:
+  deploy_tags: [vercel, cloudflare, docker, play-store, desktop]
+  npm:                          # package.json dependency -> tags
+    next: [nextjs, react]
+    react: [react]
+    '@supabase/supabase-js': [supabase]
+    '@supabase/ssr': [supabase]
+    stripe: [stripe]
+    '@stripe/stripe-js': [stripe]
+    resend: [resend]
+    '@playwright/test': [playwright]
+    '@capacitor/core': [capacitor]
+    '@capacitor/android': [capacitor, play-store]
+    '@tauri-apps/api': [tauri]
+    '@sentry/nextjs': [sentry]
+  cargo:                        # Cargo.toml dependency -> tags
+    axum: [axum, rust-web]
+    actix-web: [rust-web]
+    leptos: [leptos, rust-web, wasm-ui]
+    dioxus: [dioxus, wasm-ui]
+    yew: [yew, wasm-ui]
+    tauri: [tauri, desktop]
+    sqlx: [sql]
+    diesel: [sql]
+    rusqlite: [sql]
+    worker: [cloudflare]
+  files:                        # a file matching the glob exists -> tags
+    '**/package.json': [node]
+    '**/Cargo.toml': [rust]
+    '**/pnpm-lock.yaml': [pnpm]
+    '**/package-lock.json': [npm]
+    '**/yarn.lock': [yarn]
+    '**/bun.lock*': [bun]
+    '**/vercel.json': [vercel]
+    '.vercel/project.json': [vercel]
+    '**/wrangler.{toml,json,jsonc}': [cloudflare]
+    'supabase/config.toml': [supabase]
+    '.github/workflows/*.{yml,yaml}': [github-actions]
+    '**/twa-manifest.json': [twa, play-store]
+    '**/capacitor.config.{ts,js,json}': [capacitor]
+    'android/app/build.gradle*': [play-store]
+    '**/tauri.conf.json': [tauri, desktop]
+    '**/Dockerfile*': [docker]
+    'CLAUDE.md': [claude-code]
+    '.claude/settings.json': [claude-code]
+    '.mcp.json': [mcp]
+    '**/playwright.config.*': [playwright]
+  content:                      # a source file contains the regex -> tag
+    server-actions: '^\s*[\x27"]use server[\x27"]'
+    use-cache: '[\x27"]use cache(: *\w+)?[\x27"]'
+    next-og: 'from\s+[\x27"]next/og[\x27"]'
+    raw-html: 'dangerouslySetInnerHTML|\.innerHTML\s*=|inner_html|dangerous_inner_html'
+    microphone: 'getUserMedia\('
+    web-midi: 'requestMIDIAccess\('
+    file-upload: 'type=[\x27"]file[\x27"]|\.upload\('
+    stripe-webhook: 'constructEvent(Async)?\('
+    unsafe-rust: '\bunsafe\s*\{'
+    rust-server-fns: '#\[server'
+  derive:                       # tag added when any listed tag is present
+    web: [nextjs, rust-web, wasm-ui]
+
+# Minimum patched versions per release line, taken from vendor advisories.
+# Vendor pages can be days ahead of advisory databases: a critical Next.js advisory
+# published on 2026-08-25 was still missing from the GitHub Advisory Database nine
+# days later, so npm audit, Dependabot and OSV-Scanner could not see it.
+# Line keys: "16" = any 16.x, "15.5" = 15.5.x, "*" = any version.
+# A version on an unlisted older line fails; a newer major passes with a note.
+floors:
+  - id: next
+    ecosystem: npm
+    package: next
+    min: {'16': '16.4.1', '15.5': '15.5.28'}
+    note: 2026-10-14 release fixed two critical RCEs ('use cache' typed arrays, SVG image optimization) and a high Server Actions DoS
+    refs: [https://github.com/vercel/next.js/security/advisories]
+    verified: 2026-10-25
+  - id: sharp
+    ecosystem: npm
+    package: sharp
+    min: {'*': '0.35.5'}
+    note: closes the SVG image optimization RCE (GHSA-2464-fhr4-w9xw) even before next is upgraded
+    refs: [https://github.com/vercel/next.js/security/advisories]
+    verified: 2026-10-25
+  - id: node
+    runtime: node
+    command: node -v
+    min: {'22': '22.23.4', '24': '24.22.1', '26': '26.12.1'}
+    note: 2026-10-21 security releases; Node 20 reached end of life on 2026-04-30
+    refs: [https://nodejs.org/en/blog/vulnerability]
+    verified: 2026-10-25
+  - id: claude-code
+    runtime: claude-code
+    command: claude --version
+    min: {'*': '2.1.222'}
+    note: subagent worktree isolation fixes (edits and Bash stay inside the worktree)
+    refs: [https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md]
+    verified: 2026-10-25
+
+# Where the weekly refresh looks for new advisories, per stack tag.
+sources:
+  nextjs: [https://github.com/vercel/next.js/security/advisories, https://nextjs.org/blog]
+  react: [https://react.dev/blog]
+  node: [https://nodejs.org/en/blog/vulnerability]
+  supabase: [https://supabase.com/changelog]
+  vercel: [https://vercel.com/changelog]
+  stripe: [https://docs.stripe.com/changelog]
+  github-actions: [https://github.blog/changelog/]
+  rust: [https://rustsec.org/advisories/]
+  tauri: [https://github.com/tauri-apps/tauri/security/advisories]
+  claude-code: [https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md]
+  pnpm: [https://github.com/pnpm/pnpm/releases]
+  web: [https://owasp.org/Top10/2025/]
+
+checks:
+
+  # ---------------------------------------------------------------- agent and dev environment
+
+  - id: CC-01
+    title: Agents cannot read secret files through Claude Code's file tools
+    tech: [claude-code]
+    env: [dev]
+    owasp: A07
+    severity: high
+    stage: [S6, weekly]
+    paths: ['.claude/settings*.json']
+    check: >
+      Committed .claude/settings.json denies Read on .env files, key files and cloud
+      credential folders. Deny rules cover Claude's own file tools only; CC-02 covers
+      the shell.
+    grep:
+      files: ['.claude/settings.json']
+      require: 'Read\((\./|\*\*/)\.env'
+      missing: fail
+    refs: [https://code.claude.com/docs/en/settings]
+
+  - id: CC-02
+    title: Shell commands run in the Claude Code sandbox
+    tech: [claude-code]
+    env: [dev]
+    owasp: A02
+    severity: high
+    stage: [weekly]
+    check: >
+      The Bash sandbox is on (/sandbox, or a "sandbox" block in settings.json), so a
+      prompt injection that gets a command approved still cannot read files or reach
+      hosts outside the allowed set.
+    grep:
+      files: ['.claude/settings.json']
+      require: '"sandbox"\s*:'
+      missing: fail
+
+  - id: CC-03
+    title: No permission bypass in shared config, scripts or CI
+    tech: [claude-code]
+    env: [dev, ci]
+    owasp: A02
+    severity: high
+    stage: [S6]
+    paths: ['.claude/**', '**/package.json', 'scripts/**', '**/*.sh', '.github/workflows/**']
+    check: >
+      bypassPermissions and --dangerously-skip-permissions appear only in a throwaway
+      container setup, never in shared settings, scripts or workflows.
+    grep:
+      files: ['.claude/**/*.json', '**/package.json', 'scripts/**', '**/*.sh', '.github/workflows/*.{yml,yaml}']
+      forbid: 'bypassPermissions|dangerously-skip-permissions'
+      allow: ['.devcontainer/**']
+
+  - id: CC-04
+    title: MCP servers are chosen, pinned and narrowly scoped
+    tech: [mcp]
+    env: [dev]
+    owasp: A03
+    severity: high
+    stage: [S7, weekly]
+    paths: ['.mcp.json', '.claude/settings*.json']
+    check: >
+      Every server in .mcp.json was added on purpose and comes from a known source.
+      Database servers are read-only and limited to one non-production project where
+      the server supports it. Tools that change production (deploys, env vars,
+      payments) need a human. Playwright MCP browses only localhost and preview URLs.
+      A new server gets the same review as a new dependency.
+
+  - id: CC-05
+    title: Hooks, skills, agent definitions and CLAUDE.md are reviewed as code
+    tech: [claude-code]
+    env: [dev, ci]
+    owasp: A08
+    severity: high
+    stage: [S7]
+    paths: ['.claude/**', 'CLAUDE.md', '.mcp.json']
+    check: >
+      Changes under .claude/ and to CLAUDE.md get your review before merge. Hooks run
+      shell commands in every session and skills steer every agent, so a feature item
+      must not change them on the side.
+
+  - id: CC-06
+    title: Agents treat fetched content as data
+    tech: [claude-code]
+    env: [dev]
+    owasp: A06
+    severity: medium
+    stage: [weekly]
+    check: >
+      CLAUDE.md says that web pages, issues, PR comments, emails, logs and fixtures are
+      data, not instructions, and that the agent stops and asks when such content asks
+      for an action. Sessions that browse hold no production credentials.
+    grep:
+      files: ['CLAUDE.md']
+      require: '(?i)untrusted|prompt injection|not instructions'
+      missing: fail
+
+  - id: CC-07
+    title: Agent sessions hold no production secrets and cannot ship to production
+    tech: [claude-code]
+    env: [dev, prod]
+    owasp: A01
+    severity: blocker
+    stage: [weekly]
+    check: >
+      The dev machine has only development and test keys (vercel env pull defaults to
+      Development; Supabase runs locally or on a dev project). Promoting to production,
+      running production migrations and changing production env vars are done by you.
+
+  - id: DEV-01
+    title: next dev listens on localhost only
+    tech: [nextjs]
+    env: [dev]
+    owasp: A02
+    severity: medium
+    stage: [S6, weekly]
+    paths: ['**/package.json']
+    check: >
+      next dev listens on all interfaces by default, so anyone on the same network can
+      reach the dev server and its tooling endpoints (a 2026-09-30 advisory covered
+      information disclosure through the dev server's MCP endpoint). Start it with
+      -H 127.0.0.1.
+    grep:
+      files: ['**/package.json']
+      when: '"next dev'
+      require: '"next dev[^"]*(-H|--hostname)[ =](127\.0\.0\.1|localhost)'
+
+  - id: DEV-02
+    title: Remote access to the dev machine needs sign-in and is closed after use
+    tech: [remote-dev]
+    env: [dev]
+    owasp: A01
+    severity: high
+    stage: [weekly]
+    check: >
+      Tunnels and VPNs used to reach the dev machine (VS Code tunnels, Tailscale,
+      cloudflared, ngrok) require sign-in and are limited to your devices, and they
+      never publish a dev server, Supabase Studio or a local database to the internet.
+
+  - id: DEV-03
+    title: .env files are ignored and never committed
+    env: [dev, ci]
+    owasp: A07
+    severity: blocker
+    stage: [S6, weekly]
+    check: .gitignore covers .env files and only .env.example (dummy values) is tracked.
+    run: 'grep -qE "^\*?\.env" .gitignore || { echo ".gitignore has no .env entry"; exit 1; }; t="$(git ls-files | grep -E "(^|/)\.env" | grep -vE "\.(example|sample|template)$")"; test -z "$t" || { echo "tracked env files: $t"; exit 1; }'
+
+  # ---------------------------------------------------------------- supply chain
+
+  - id: SUP-01
+    title: No secrets in the item's commits
+    env: [dev, ci]
+    owasp: A07
+    severity: blocker
+    stage: [S6]
+    check: Gitleaks finds no secrets in the commits between the base branch and HEAD.
+    run: 'gitleaks git --redact --no-banner --log-opts="{{base_ref}}..HEAD" .'
+    refs: [https://github.com/gitleaks/gitleaks]
+
+  - id: SUP-02
+    title: No known vulnerable dependencies in the advisory databases
+    env: [ci, preview, prod]
+    owasp: A03
+    severity: blocker
+    stage: [S6, weekly]
+    paths: ['**/package.json', '**/pnpm-lock.yaml', '**/package-lock.json', '**/yarn.lock', '**/bun.lock*', '**/Cargo.toml', '**/Cargo.lock']
+    check: >
+      OSV-Scanner reports no known vulnerabilities in any lockfile (npm and Cargo).
+      Databases can lag vendor advisories, so SUP-03 checks vendor floors too.
+    run: 'osv-scanner scan source --recursive .'
+    refs: [https://google.github.io/osv-scanner/]
+
+  - id: SUP-03
+    title: Installed versions are at or above the vendor security floors
+    owasp: A03
+    severity: blocker
+    stage: [S6, S8, weekly]
+    check: >
+      Every package and runtime listed under floors is at or above the patched version
+      for its release line. The weekly refresh updates the floors from vendor pages.
+    builtin: floors
+
+  - id: SUP-04
+    title: New npm package versions wait before they can be installed
+    tech: [node]
+    env: [dev, ci]
+    owasp: A03
+    severity: high
+    stage: [weekly]
+    check: >
+      The package manager refuses versions younger than a cooldown. pnpm uses
+      minimumReleaseAge in minutes (pnpm 11 defaults to 1440; 10.16+ needs it set),
+      npm 11.10+ uses min-release-age in days, Yarn 4.10+ uses npmMinimalAgeGate. Set
+      it explicitly (for example 10080 = 7 days in pnpm-workspace.yaml) and keep an
+      exclude list for urgent security patches.
+    grep:
+      files: ['pnpm-workspace.yaml', '.npmrc', '.yarnrc.yml', 'bunfig.toml', 'package.json']
+      present: 'minimumReleaseAge|minimum-release-age|min-release-age|npmMinimalAgeGate'
+    refs: [https://pnpm.io/settings, https://lilting.ch/en/articles/pnpm-11-minimum-release-age-default-shai-hulud-defense]
+
+  - id: SUP-05
+    title: New crate versions wait before Cargo resolves them
+    tech: [rust]
+    env: [dev, ci]
+    owasp: A03
+    severity: medium
+    stage: [weekly]
+    check: >
+      Rust 1.100 (scheduled for 2026-11-12) stabilizes global-min-publish-age under
+      [registry] in .cargo/config.toml; the default stays 0, so set it (for example
+      "7 days"). Until then use the cargo-cooldown wrapper. A cooldown does not reject
+      versions already in Cargo.lock and does not apply to cargo install.
+    grep:
+      files: ['.cargo/config.toml', 'cooldown.toml']
+      present: 'min-publish-age'
+    refs: [https://socket.dev/blog/rust-cargo-cooldowns]
+
+  - id: SUP-06
+    title: Install scripts run only for reviewed packages
+    tech: [node]
+    env: [dev, ci]
+    owasp: A03
+    severity: high
+    stage: [S7]
+    paths: ['**/package.json', 'pnpm-workspace.yaml', '.npmrc']
+    check: >
+      Dependency lifecycle scripts stay blocked by default (pnpm 10+ blocks them until
+      approved; npm needs ignore-scripts=true). Any package added to the approved
+      builds list was checked for why it needs an install script.
+
+  - id: SUP-07
+    title: Each new dependency is justified and checked
+    env: [dev, ci]
+    owasp: A03
+    severity: high
+    stage: [S7]
+    paths: ['**/package.json', '**/Cargo.toml']
+    check: >
+      For each new direct dependency: no helper of ours already does it, it is
+      maintained, the name is not a typo-squat, and its install-time code was read
+      (npm lifecycle scripts; Rust build.rs and proc-macros, which run at build time).
+
+  - id: SUP-08
+    title: CI installs exactly what the lockfile says
+    tech: [github-actions]
+    env: [ci]
+    owasp: A08
+    severity: high
+    stage: [S6, weekly]
+    paths: ['.github/workflows/**']
+    check: CI uses pnpm install --frozen-lockfile, npm ci, yarn --immutable or cargo --locked.
+    grep:
+      files: ['.github/workflows/*.{yml,yaml}']
+      present: 'frozen-lockfile|npm ci\b|--immutable|--locked'
+
+  # ---------------------------------------------------------------- any web app
+
+  - id: WEB-01
+    title: Every server entry point checks who the user is and what they may touch
+    tech: [web]
+    env: [preview, prod]
+    owasp: A01
+    severity: blocker
+    stage: [S1, S2, S4, S7]
+    content: '^\s*[\x27"]use server[\x27"]|export\s+(async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b|#\[(server|get|post|put|patch|delete)|\.route\('
+    check: >
+      S1 ask who may read and change each piece of data the item touches; record it as
+      a decision. S2 put the check in the handler or data-access layer, not only in
+      proxy/middleware. S4 for each new endpoint or action, a spec proves anonymous is
+      rejected, another user's resource is rejected (403/404) and a free account cannot
+      use paid features. S7 no handler trusts an ID from the client without an owner check.
+
+  - id: WEB-02
+    title: Input is validated at every network boundary
+    tech: [web]
+    owasp: A05
+    severity: high
+    stage: [S7]
+    content: '^\s*[\x27"]use server[\x27"]|export\s+(async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b|#\[(server|get|post|put|patch|delete)|\.route\('
+    check: >
+      Server actions, route handlers, webhooks and Rust handlers parse input with a
+      schema (zod, valibot, serde types) and limit sizes before using it. Commands that
+      arrive from the client bus are validated again on the server.
+
+  - id: WEB-03
+    title: The server never fetches a user-chosen URL without an allowlist
+    tech: [web]
+    owasp: A01
+    severity: high
+    stage: [S1, S7]
+    content: 'fetch\(|reqwest::|axios'
+    check: >
+      S1 ask whether the item fetches anything on the server based on user input (link
+      previews, image URLs, imports, webhooks to user URLs). S7 such fetches use a
+      fixed host allowlist and block private address ranges.
+
+  - id: WEB-04
+    title: Redirect targets from user input are same-site paths
+    tech: [web]
+    owasp: A01
+    severity: high
+    stage: [S7]
+    content: 'redirect\(|Redirect::'
+    check: >
+      next, returnTo and callback parameters are used only if they start with a single
+      "/" (not "//" or "/\"). The common auth callback code `${origin}${next}` becomes
+      an open redirect when next is "@evil.example".
+
+  - id: WEB-05
+    title: Abuse-prone endpoints are rate limited
+    tech: [web]
+    owasp: A06
+    severity: medium
+    stage: [S2, S7]
+    content: '^\s*[\x27"]use server[\x27"]|export\s+(async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b|#\[(server|get|post|put|patch|delete)|\.route\('
+    check: >
+      Sign-in, sign-up, password reset, email sending, score submission and expensive
+      actions have per-user and per-IP limits (platform firewall rules, a limiter in the
+      handler, or tower_governor in Rust).
+
+  - id: WEB-06
+    title: Errors fail closed and leak nothing
+    tech: [web]
+    owasp: A10
+    severity: medium
+    stage: [S7]
+    content: '^\s*[\x27"]use server[\x27"]|export\s+(async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b|#\[(server|get|post|put|patch|delete)|\.route\('
+    check: >
+      A failed auth, validation or payment lookup ends the request and never falls
+      through to the success path. Clients get a generic message; stack traces, SQL and
+      upstream error bodies stay in server logs.
+
+  - id: WEB-07
+    title: Security headers on every HTML response
+    tech: [web, playwright]
+    env: [preview, prod]
+    owasp: A02
+    severity: high
+    stage: [S4, S8]
+    paths: ['**/next.config.*', '**/proxy.{ts,js}', '**/middleware.{ts,js}', '**/layout.{tsx,jsx}']
+    check: >
+      A Playwright spec tagged @security-headers loads the main routes and asserts a
+      nonce-based Content-Security-Policy with frame-ancestors 'none',
+      Strict-Transport-Security, X-Content-Type-Options nosniff, a Referrer-Policy, and
+      a Permissions-Policy that allows only what the app uses (Note Noodle:
+      microphone=(self), midi=(self), camera=()). S4 extend it when the item adds a
+      route or a third-party origin. S8 run it against the preview URL.
+    run: 'npx playwright test --grep @security-headers'
+
+  - id: WEB-08
+    title: Security events are logged and raise alerts
+    tech: [web]
+    env: [prod]
+    owasp: A09
+    severity: medium
+    stage: [weekly]
+    check: >
+      Auth failures, permission denials, webhook signature failures, payment anomalies
+      and rate-limit hits are logged without secrets or personal data, and an alert
+      (for example a Sentry alert rule) fires on spikes.
+
+  - id: WEB-09
+    title: Raw HTML comes only from our own generators or a sanitizer
+    tech: [raw-html]
+    owasp: A05
+    severity: high
+    stage: [S6, S7]
+    content: 'dangerouslySetInnerHTML|innerHTML|inner_html'
+    check: >
+      dangerouslySetInnerHTML, innerHTML and inner_html receive either markup we
+      generate from typed data (notation SVG) or input cleaned with DOMPurify or
+      ammonia. Translation strings render as text. Each approved use goes in this
+      check's allow list with the reason in a comment.
+    grep:
+      files: ['**/*.{ts,tsx,js,jsx,rs}']
+      forbid: 'dangerouslySetInnerHTML|\.innerHTML\s*=|inner_html|dangerous_inner_html'
+      allow: []
+
+  - id: FEAT-01
+    title: XP, scores and leaderboard entries cannot be forged by the client
+    tech: [gamification]
+    env: [preview, prod]
+    owasp: A08
+    severity: high
+    stage: [S1, S4, S7]
+    content: '(?i)\bxp\b|score|leaderboard|achievement|streak'
+    check: >
+      S1 ask which values the server computes and which it accepts from the client.
+      S4 a spec sends a tampered award (extra XP, another user's ID, a replayed request)
+      straight to the action or API and expects a rejection. S7 awards are derived on
+      the server from verified events, capped and rate limited; leaderboard reads return
+      public fields only.
+
+  - id: FEAT-02
+    title: Microphone audio is captured on demand and stays on the device
+    tech: [microphone]
+    env: [preview, prod]
+    severity: medium
+    stage: [S1, S7]
+    content: 'getUserMedia\('
+    check: >
+      S1 ask whether any audio leaves the browser and record the answer. S7
+      getUserMedia runs only after a user action, the stream stops when the exercise
+      ends, and audio is uploaded or stored only if the spec says so (then the privacy
+      notice and the Play data-safety form say so too).
+
+  - id: FEAT-03
+    title: Web MIDI access requests no SysEx
+    tech: [web-midi]
+    severity: medium
+    stage: [S6, S7]
+    content: 'requestMIDIAccess\('
+    check: >
+      requestMIDIAccess is called after a user action and without sysex: true. SysEx
+      messages can reconfigure devices or rewrite their firmware.
+    grep:
+      files: ['**/*.{ts,tsx,js,jsx}']
+      when: 'requestMIDIAccess\('
+      forbid: 'sysex\s*:\s*true'
+
+  # ---------------------------------------------------------------- Next.js and React
+
+  - id: NEXT-01
+    title: Every server action checks auth itself
+    tech: [nextjs, server-actions]
+    env: [preview, prod]
+    owasp: A01
+    severity: blocker
+    stage: [S6, S7]
+    content: '^\s*[\x27"]use server[\x27"]'
+    check: >
+      Server actions are public POST endpoints. Every 'use server' file calls one of the
+      auth helpers in vars.auth_guard before touching data, then checks ownership and
+      validates input. Actions that are public on purpose go in the allow list.
+    grep:
+      files: ['**/*.{ts,tsx,js,jsx}']
+      when: '^\s*[\x27"]use server[\x27"]'
+      require: '{{auth_guard}}'
+      allow: []
+
+  - id: NEXT-02
+    title: Proxy/middleware is not the only authorization layer
+    tech: [nextjs]
+    owasp: A01
+    severity: blocker
+    stage: [S2, S7]
+    paths: ['**/proxy.{ts,js}', '**/middleware.{ts,js}']
+    check: >
+      Pages, route handlers and server actions check auth again in the data-access
+      layer. Proxy/middleware bypasses keep coming back (CVE-2025-29927; four high
+      severity bypasses in the May 2026 release and another in July 2026), so proxy is
+      only a redirect convenience.
+    refs: [https://vercel.com/changelog/next-js-may-2026-security-release]
+
+  - id: NEXT-03
+    title: Modules that read server secrets import 'server-only'
+    tech: [nextjs]
+    owasp: A02
+    severity: high
+    stage: [S6]
+    content: 'process\.env\.'
+    check: >
+      A shared module that reads a secret env var imports 'server-only', so importing it
+      from a client component fails the build instead of shipping the secret.
+    grep:
+      files: ['**/*.{ts,tsx,js,jsx}']
+      when: 'process\.env\.(?!NEXT_PUBLIC_)\w*(SECRET|SERVICE_ROLE|PRIVATE|TOKEN|API_KEY|PASSWORD)'
+      require: '[\x27"]server-only[\x27"]'
+      unless: '^\s*[\x27"]use server[\x27"]'
+      allow: ['**/route.{ts,js}', '**/{proxy,middleware,instrumentation}.{ts,js}', '**/*.config.{ts,js,mjs}', '**/*.{test,spec}.{ts,tsx,js}', 'tests/**', 'e2e/**', 'scripts/**', 'security/**']
+
+  - id: NEXT-04
+    title: No secret behind a NEXT_PUBLIC_ name
+    tech: [nextjs]
+    owasp: A02
+    severity: blocker
+    stage: [S6, weekly]
+    check: NEXT_PUBLIC_ values are inlined into the browser bundle, so none may hold a secret.
+    grep:
+      files: ['**/*.{ts,tsx,js,jsx,mjs}', '**/.env*', '**/vercel.json', '**/turbo.json']
+      forbid: 'NEXT_PUBLIC_\w*(SECRET|SERVICE_ROLE|PRIVATE|PASSWORD|WEBHOOK)'
+
+  - id: NEXT-05
+    title: The built client bundle contains no secret keys
+    tech: [nextjs]
+    env: [preview, prod]
+    owasp: A02
+    severity: blocker
+    stage: [S6, S8]
+    check: >
+      After next build, nothing under .next/static contains a Stripe secret or
+      restricted key, a webhook signing secret, a Supabase secret key or a private key.
+      Skipped when there is no build output.
+    grep:
+      files: ['.next/static/**/*.js']
+      forbid: 'sk_(live|test)_[0-9A-Za-z]{10,}|rk_(live|test)_[0-9A-Za-z]{10,}|whsec_[0-9A-Za-z]{10,}|sb_secret_[0-9A-Za-z_-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY'
+
+  - id: NEXT-06
+    title: The test-only bus hook is not in the production build
+    tech: [nextjs, playwright]
+    env: [prod]
+    owasp: A02
+    severity: blocker
+    stage: [S8]
+    check: >
+      Built without NEXT_PUBLIC_E2E, the client bundle has no window hook from the
+      Playwright design (vars.test_hook), and the Vercel Production environment never
+      sets NEXT_PUBLIC_E2E. Run it after a production build, not the E2E build.
+    grep:
+      files: ['.next/static/**/*.js']
+      forbid: '{{test_hook}}'
+
+  - id: NEXT-07
+    title: Image optimization accepts known hosts only and no SVG
+    tech: [nextjs]
+    env: [preview, prod]
+    owasp: A01
+    severity: high
+    stage: [S6, S7]
+    paths: ['**/next.config.*']
+    check: >
+      images.remotePatterns lists exact hosts (no "**") and dangerouslyAllowSVG stays
+      off. The image optimizer had an SVG denial of service (July 2026), an SSRF
+      (2026-09-30) and an SVG remote code execution through sharp (2026-10-14).
+    grep:
+      files: ['**/next.config.*']
+      forbid: 'hostname:\s*[\x27"]\*\*[\x27"]|dangerouslyAllowSVG:\s*true'
+
+  - id: NEXT-08
+    title: Cached functions never mix per-user data into shared entries
+    tech: [nextjs, use-cache]
+    owasp: A01
+    severity: high
+    stage: [S7]
+    content: '[\x27"]use cache'
+    check: >
+      A 'use cache' function does not read cookies, headers or the session unless its
+      cache is per-user by design, and its arguments fully determine the result. Two
+      advisories on 2026-09-30 leaked cached content across root params and Draft Mode.
+
+  - id: NEXT-09
+    title: Generated OG images take validated input only
+    tech: [nextjs, next-og]
+    owasp: A05
+    severity: medium
+    stage: [S7]
+    content: 'next/og'
+    check: >
+      ImageResponse inputs (names, scores) are validated and length-limited, and the
+      fonts and images it loads come from fixed URLs. next/og had a critical remote code
+      execution advisory on 2026-09-22 (closed by the SUP-03 floor).
+
+  - id: NEXT-10
+    title: No public browser source maps in production
+    tech: [nextjs]
+    env: [prod]
+    owasp: A02
+    severity: medium
+    stage: [S6]
+    paths: ['**/next.config.*']
+    check: productionBrowserSourceMaps stays off; upload maps privately (for example to Sentry) if needed.
+    grep:
+      files: ['**/next.config.*']
+      forbid: 'productionBrowserSourceMaps:\s*true'
+
+  # ---------------------------------------------------------------- Supabase
+
+  - id: SUPA-01
+    title: New tables enable row level security in the same migration
+    tech: [supabase]
+    owasp: A01
+    severity: blocker
+    stage: [S6]
+    paths: ['supabase/migrations/**']
+    check: >
+      A migration that creates a table also enables RLS on it and adds its policies.
+      This is a fast heuristic; SUPA-02 is the authoritative check.
+    grep:
+      files: ['supabase/migrations/*.sql']
+      when: '(?i)create\s+table'
+      require: '(?i)enable\s+row\s+level\s+security'
+
+  - id: SUPA-02
+    title: Supabase security advisor shows no errors
+    tech: [supabase]
+    env: [preview, prod]
+    owasp: A02
+    severity: blocker
+    stage: [S8, weekly]
+    check: >
+      The security advisor lists no ERROR findings (RLS disabled, security definer
+      views, mutable function search_path, exposed auth.users) on the preview branch
+      before merge and on production weekly.
+    mcp: 'Supabase get_advisors (type: security)'
+
+  - id: SUPA-03
+    title: Policies are tested with two real users
+    tech: [supabase]
+    env: [preview]
+    owasp: A01
+    severity: blocker
+    stage: [S4]
+    paths: ['supabase/migrations/**']
+    check: >
+      For each new or changed table or policy, a test signs in as user A and user B with
+      the publishable key and proves B cannot select, update or delete A's rows and an
+      anonymous client cannot read private rows (Playwright API test tagged @rls, or
+      pgTAP through supabase test db).
+
+  - id: SUPA-04
+    title: The Supabase secret key never appears in client code
+    tech: [supabase]
+    owasp: A02
+    severity: blocker
+    stage: [S6, weekly]
+    check: >
+      The secret key (sb_secret_..., or the legacy service_role key) bypasses RLS, so
+      only server-only modules read it. Publishable keys are safe in the browser only
+      while RLS is correct.
+    grep:
+      files: ['**/*.{ts,tsx,js,jsx}']
+      when: '^\s*[\x27"]use client[\x27"]'
+      forbid: '(?i)service_role|SUPABASE_SECRET|sb_secret_'
+    refs: [https://supabase.com/docs/guides/api/api-keys]
+
+  - id: SUPA-05
+    title: Server code authorizes with getClaims or getUser, not getSession
+    tech: [supabase]
+    owasp: A07
+    severity: high
+    stage: [S6]
+    content: 'auth\.getSession\('
+    check: >
+      On the server, getSession() returns the stored session without revalidating the
+      token. Authorization decisions use auth.getClaims() or auth.getUser().
+    grep:
+      files: ['**/*.{ts,tsx,js}']
+      when: '^\s*[\x27"]use server[\x27"]|export\s+(async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\b|createServerClient|server-only'
+      forbid: 'auth\.getSession\('
+
+  - id: SUPA-06
+    title: SECURITY DEFINER functions pin their search_path
+    tech: [supabase]
+    owasp: A01
+    severity: high
+    stage: [S6]
+    paths: ['supabase/migrations/**']
+    check: >
+      Functions declared SECURITY DEFINER set search_path explicitly (for example
+      set search_path = ''), and EXECUTE is revoked from anon where it is not needed.
+    grep:
+      files: ['supabase/migrations/*.sql']
+      when: '(?i)security\s+definer'
+      require: '(?i)set\s+search_path'
+
+  - id: SUPA-07
+    title: Views respect the caller's RLS
+    tech: [supabase]
+    owasp: A01
+    severity: high
+    stage: [S6]
+    paths: ['supabase/migrations/**']
+    check: >
+      Views in exposed schemas use (security_invoker = true); otherwise they run as
+      their owner and skip the caller's RLS.
+    grep:
+      files: ['supabase/migrations/*.sql']
+      when: '(?i)create\s+(or\s+replace\s+)?view'
+      require: '(?i)security_invoker'
+
+  - id: SUPA-08
+    title: Storage buckets are private unless the content is public
+    tech: [supabase, file-upload]
+    owasp: A01
+    severity: high
+    stage: [S1, S7]
+    content: 'storage\.from\('
+    check: >
+      S1 ask who may read uploaded files. S7 private buckets have owner-scoped policies
+      on storage.objects; public buckets hold public assets only (demo videos); size and
+      type limits are enforced on the server.
+
+  - id: SUPA-09
+    title: The auth redirect allowlist has no open wildcards
+    tech: [supabase]
+    deploy: [vercel]
+    env: [preview, prod]
+    owasp: A07
+    severity: high
+    stage: [weekly]
+    check: >
+      Supabase Auth redirect URLs list production domains exactly. Vercel previews use
+      the team-scoped pattern https://*-<team-slug>.vercel.app/**, never
+      https://*.vercel.app/**, which any Vercel user can match with their own deployment.
+
+  - id: SUPA-10
+    title: Preview and dev never use the production database
+    tech: [supabase]
+    env: [dev, preview]
+    owasp: A02
+    severity: blocker
+    stage: [weekly]
+    check: >
+      Production, preview and development use different Supabase projects or branches,
+      and Preview env vars hold only the preview project's keys.
+
+  # ---------------------------------------------------------------- Stripe
+
+  - id: STRIPE-01
+    title: Stripe webhooks verify the signature
+    tech: [stripe]
+    owasp: A08
+    severity: blocker
+    stage: [S6, S7]
+    content: 'checkout\.session\.|customer\.subscription\.|invoice\.'
+    check: >
+      The webhook handler calls stripe.webhooks.constructEvent (or constructEventAsync)
+      with the endpoint's signing secret before reading the event.
+    grep:
+      files: ['**/route.{ts,js}', '**/pages/api/**/*.{ts,js}']
+      when: 'checkout\.session\.completed|customer\.subscription\.(created|updated|deleted)|invoice\.(paid|payment_failed)'
+      require: 'constructEvent(Async)?\('
+
+  - id: STRIPE-02
+    title: Stripe webhooks verify the raw request body
+    tech: [stripe, stripe-webhook]
+    owasp: A08
+    severity: blocker
+    stage: [S6]
+    content: 'constructEvent'
+    check: >
+      Signature verification needs the exact bytes. Read await req.text() (App Router)
+      and pass that string to constructEvent; never re-serialize parsed JSON.
+    grep:
+      files: ['**/*.{ts,js}']
+      when: 'constructEvent(Async)?\('
+      require: '\.text\(\)|\.arrayBuffer\(\)|rawBody|getRawBody'
+
+  - id: STRIPE-03
+    title: Prices and entitlements are decided on the server
+    tech: [stripe]
+    env: [preview, prod]
+    owasp: A01
+    severity: blocker
+    stage: [S1, S4, S7]
+    content: '(?i)stripe|subscription|entitle|premium|paywall|\bplan\b|isPro'
+    check: >
+      S1 ask which features are paid and what a lapsed subscription loses. S4 a free
+      account calling a paid action, route or API directly is rejected, and opening the
+      success URL without paying unlocks nothing. S7 Checkout sessions use price IDs
+      from server config, never amounts from the client, and access reads subscription
+      state written by verified webhooks.
+
+  - id: STRIPE-04
+    title: Webhook processing is idempotent and order-safe
+    tech: [stripe, stripe-webhook]
+    owasp: A08
+    severity: high
+    stage: [S7]
+    content: 'constructEvent'
+    check: >
+      Processed event IDs are stored so retries apply once; handlers fetch the current
+      object instead of trusting event order; the endpoint answers 2xx quickly.
+
+  - id: STRIPE-05
+    title: Live Stripe keys exist only in production
+    tech: [stripe]
+    owasp: A02
+    severity: blocker
+    stage: [weekly]
+    check: >
+      Development and Preview use test-mode keys and their own webhook secrets. Live
+      keys exist only in Production as sensitive variables. Restricted keys are used
+      wherever full access is not needed.
+    mcp: 'Vercel filter_project_envs (targets of STRIPE_* variables)'
+
+  # ---------------------------------------------------------------- Resend
+
+  - id: MAIL-01
+    title: Resend API keys are sending-only and per environment
+    tech: [resend]
+    owasp: A02
+    severity: medium
+    stage: [weekly]
+    check: >
+      Production uses a sending-access key limited to the production domain; preview and
+      dev use their own keys. Full-access keys stay out of apps.
+
+  - id: MAIL-02
+    title: The sending domain publishes a DMARC record
+    tech: [resend]
+    env: [prod]
+    severity: medium
+    stage: [weekly]
+    check: >
+      _dmarc.<domain> has a DMARC record (start with p=none and reports, then move to
+      quarantine). SPF and DKIM alone do not stop mail spoofed from your domain.
+    run: 'dig +short TXT _dmarc.{{mail_domain}} | grep -q "v=DMARC1"'
+
+  - id: MAIL-03
+    title: Emails escape user input and Resend webhooks are verified
+    tech: [resend]
+    owasp: A05
+    severity: high
+    stage: [S7]
+    content: '(?i)resend|svix'
+    check: >
+      User text in emails is escaped (React Email escapes by default; raw HTML
+      templates must escape). Resend webhooks verify the Svix signature headers before
+      the payload is used.
+
+  # ---------------------------------------------------------------- Vercel
+
+  - id: VERCEL-01
+    title: Preview deployments require sign-in
+    deploy: [vercel]
+    env: [preview]
+    owasp: A01
+    severity: blocker
+    stage: [S8, weekly]
+    check: >
+      Deployment Protection is on for previews (Vercel Authentication, Standard
+      Protection or higher). Preview builds carry the E2E bus hook and test data, so
+      they must not be public; Playwright gets in with the Protection Bypass for
+      Automation secret.
+    mcp: 'Vercel get_project (deployment protection settings)'
+
+  - id: VERCEL-02
+    title: Secrets are Sensitive environment variables
+    deploy: [vercel]
+    env: [preview, prod]
+    owasp: A02
+    severity: blocker
+    stage: [weekly]
+    check: >
+      Every secret is a Sensitive variable (readable only during builds), and the team
+      policy that makes new Production and Preview variables sensitive is on. After
+      Vercel's April 2026 incident, rotate any secret that was stored as non-sensitive.
+    mcp: 'Vercel filter_project_envs (type of each variable)'
+    refs: [https://vercel.com/kb/bulletin/vercel-april-2026-security-incident, https://vercel.com/kb/guide/how-to-add-vercel-environment-variables]
+
+  - id: VERCEL-03
+    title: Production secrets target Production only
+    deploy: [vercel]
+    env: [preview, prod]
+    owasp: A02
+    severity: blocker
+    stage: [weekly]
+    check: >
+      Live Stripe keys, the production Supabase secret key and production Resend keys
+      target Production only. NEXT_PUBLIC_E2E and VERCEL_AUTOMATION_BYPASS_SECRET never
+      target Production.
+    mcp: 'Vercel filter_project_envs (targets of each variable)'
+
+  - id: VERCEL-04
+    title: The Vercel account and Git integration are locked down
+    deploy: [vercel]
+    env: [prod]
+    owasp: A07
+    severity: high
+    stage: [weekly]
+    check: >
+      Every account with access uses MFA or a passkey, team members are reviewed,
+      deployments from fork pull requests need approval, and the activity log shows
+      nothing unexpected.
+
+  - id: VERCEL-05
+    title: Firewall rules cover abuse-prone routes
+    deploy: [vercel]
+    env: [prod]
+    owasp: A06
+    severity: medium
+    stage: [weekly]
+    check: >
+      Managed rules and bot protection are on where the plan allows, rate-limit rules
+      cover sign-in, server actions and API routes, and you know how to turn on Attack
+      Challenge Mode during an incident.
+    mcp: 'Vercel get_firewall_config'
+
+  # ---------------------------------------------------------------- GitHub Actions
+
+  - id: GHA-01
+    title: Actions are pinned to full commit SHAs
+    tech: [github-actions]
+    env: [ci]
+    owasp: A03
+    severity: blocker
+    stage: [S6, weekly]
+    paths: ['.github/**']
+    check: >
+      Every uses line points at a 40-character commit SHA with a version comment, so a
+      moved tag cannot swap the code. GitHub can enforce this in the allowed-actions
+      policy of the repository or organization.
+    grep:
+      files: ['.github/workflows/*.{yml,yaml}', '.github/actions/**/action.{yml,yaml}']
+      forbid: '^\s*-?\s*uses:\s*[\x27"]?(?!\./|docker://)[^@\s\x27"]+@(?![0-9a-f]{40}(?:[\x27"\s]|$))'
+    refs: [https://github.blog/changelog/2025-08-15-github-actions-policy-now-supports-blocking-and-sha-pinning-actions/]
+
+  - id: GHA-02
+    title: Workflows start with no token permissions
+    tech: [github-actions]
+    env: [ci]
+    owasp: A01
+    severity: high
+    stage: [S6, weekly]
+    paths: ['.github/workflows/**']
+    check: >
+      Each workflow sets a top-level permissions block (permissions: {} or contents: read)
+      and grants more per job only where needed.
+    grep:
+      files: ['.github/workflows/*.{yml,yaml}']
+      require: '^permissions:'
+
+  - id: GHA-03
+    title: Checkout does not leave the token on disk
+    tech: [github-actions]
+    env: [ci]
+    owasp: A07
+    severity: medium
+    stage: [S6]
+    paths: ['.github/workflows/**']
+    check: actions/checkout steps set persist-credentials false unless a later step pushes.
+    grep:
+      files: ['.github/workflows/*.{yml,yaml}']
+      when: 'actions/checkout@'
+      require: 'persist-credentials:\s*false'
+
+  - id: GHA-04
+    title: zizmor finds no medium or higher issues
+    tech: [github-actions]
+    env: [ci]
+    owasp: A08
+    severity: high
+    stage: [S6, weekly]
+    paths: ['.github/**']
+    check: >
+      zizmor reports no template injection, dangerous triggers, cache poisoning or
+      excessive permissions at medium severity or above. Set GH_TOKEN for its online audits.
+    run: 'zizmor --min-severity medium .'
+    refs: [https://docs.zizmor.sh/quickstart]
+
+  - id: GHA-05
+    title: No pull request code runs with secrets
+    tech: [github-actions]
+    env: [ci]
+    owasp: A08
+    severity: blocker
+    stage: [S6, S7]
+    paths: ['.github/workflows/**']
+    check: >
+      pull_request_target and workflow_run workflows never check out or run code from
+      the pull request. Each use needs an allow-list entry with the reason.
+    grep:
+      files: ['.github/workflows/*.{yml,yaml}']
+      forbid: 'pull_request_target|workflow_run'
+      allow: []
+
+  - id: GHA-06
+    title: Pinned actions and dependencies get update PRs with a cooldown
+    tech: [github-actions]
+    env: [ci]
+    owasp: A03
+    severity: medium
+    stage: [weekly]
+    check: >
+      .github/dependabot.yml covers github-actions plus npm and/or cargo, with
+      cooldown.default-days set. Security updates skip the cooldown.
+    grep:
+      files: ['.github/dependabot.{yml,yaml}']
+      require: 'github-actions'
+      missing: fail
+
+  - id: GHA-07
+    title: main is protected by required checks
+    tech: [github-actions]
+    env: [ci, prod]
+    owasp: A08
+    severity: high
+    stage: [weekly]
+    check: >
+      main requires pull requests and passing unit, Playwright and security checks, and
+      blocks force pushes and deletion (ruleset or branch protection).
+    run: '{ gh api "repos/{owner}/{repo}/branches/main" --jq .protected | grep -q true; } || { gh api "repos/{owner}/{repo}/rules/branches/main" --jq "length > 0" | grep -q true; }'
+
+  # ---------------------------------------------------------------- Rust
+
+  - id: RUST-01
+    title: cargo-deny policy passes for sources, bans and licenses
+    tech: [rust]
+    env: [ci]
+    owasp: A03
+    severity: high
+    stage: [S6, weekly]
+    paths: ['**/Cargo.toml', '**/Cargo.lock', 'deny.toml']
+    check: >
+      Crates come only from crates.io or allow-listed git sources, banned crates stay
+      out, and licenses match the committed deny.toml (create it with cargo deny init).
+      Advisories are covered by SUP-02.
+    run: 'cargo deny check sources bans licenses'
+
+  - id: RUST-02
+    title: Every unsafe block documents why it is sound
+    tech: [rust, unsafe-rust]
+    owasp: A06
+    severity: high
+    stage: [S6, S7]
+    content: '\bunsafe\s*\{'
+    check: >
+      Crates that need no unsafe code declare #![forbid(unsafe_code)]. Each unsafe block
+      has a // SAFETY: comment, and new unsafe code gets your review. This grep is per
+      file; add -W clippy::undocumented_unsafe_blocks to the CI clippy run for a
+      per-block check.
+    grep:
+      files: ['**/*.rs']
+      when: '\bunsafe\s*\{'
+      require: 'SAFETY:'
+
+  - id: RUST-03
+    title: SQL is never built with format!
+    tech: [rust, sql]
+    owasp: A05
+    severity: blocker
+    stage: [S6]
+    content: 'format!'
+    check: Queries use sqlx macros or bound parameters; format! never builds a query string.
+    grep:
+      files: ['**/*.rs']
+      forbid: '(query(_as|_scalar)?|sql_query|execute)\(\s*&?format!\('
+
+  - id: RUST-04
+    title: Request input cannot panic the server or overflow numbers
+    tech: [rust-web]
+    owasp: A10
+    severity: medium
+    stage: [S7]
+    content: 'unwrap\(\)|expect\(|\bas u(8|16|32|64)\b'
+    check: >
+      Handlers return errors instead of calling unwrap or expect on request data, and
+      arithmetic on user-influenced numbers (scores, XP, prices) uses checked or
+      saturating operations or overflow-checks = true in the release profile.
+
+  - id: RWEB-01
+    title: Axum keeps body limits and an explicit CORS policy
+    tech: [axum]
+    env: [preview, prod]
+    owasp: A02
+    severity: high
+    stage: [S6]
+    content: 'axum|tower_http'
+    check: >
+      DefaultBodyLimit is never disabled (raise it per route if needed), CorsLayer lists
+      origins explicitly (no permissive or very_permissive), and requests have timeouts.
+    grep:
+      files: ['**/*.rs']
+      forbid: 'DefaultBodyLimit::disable\(\)|CorsLayer::(very_)?permissive\(\)'
+
+  - id: RWEB-02
+    title: Leptos and Dioxus server functions authenticate inside the function
+    tech: [rust-server-fns]
+    env: [preview, prod]
+    owasp: A01
+    severity: blocker
+    stage: [S7]
+    content: '#\[server'
+    check: >
+      Each #[server] function is a public HTTP endpoint, so it checks the session and
+      ownership itself and validates its arguments.
+
+  # ---------------------------------------------------------------- Tauri desktop
+
+  - id: TAURI-01
+    title: The Tauri app sets a Content Security Policy
+    tech: [tauri]
+    deploy: [desktop]
+    owasp: A02
+    severity: blocker
+    stage: [S6, weekly]
+    paths: ['**/tauri.conf.json']
+    check: app.security.csp is set and restrictive; with csp null or missing, Tauri applies no CSP at all.
+    grep:
+      files: ['**/tauri.conf.json']
+      require: '"csp"\s*:\s*[{"]'
+      missing: fail
+    refs: [https://v2.tauri.app/security/csp/]
+
+  - id: TAURI-02
+    title: Tauri capabilities grant the minimum
+    tech: [tauri]
+    owasp: A01
+    severity: high
+    stage: [S6, S7]
+    paths: ['**/capabilities/**', '**/tauri.conf.json']
+    check: >
+      No whole-disk or home-folder file scopes, no shell execute or spawn without an
+      explicit command allow list, and remote origins get no IPC access unless the spec
+      needs it. Each broad permission goes in the allow list with the reason.
+    grep:
+      files: ['**/capabilities/*.{json,toml}']
+      forbid: '"\$HOME/\*\*"|"/\*\*"|"\*\*"|shell:allow-execute|shell:allow-spawn'
+      allow: []
+
+  - id: TAURI-03
+    title: Tauri commands validate input and expose no raw system access
+    tech: [tauri]
+    owasp: A01
+    severity: high
+    stage: [S7]
+    content: '#\[tauri::command'
+    check: >
+      Each #[tauri::command] validates its arguments, resolves paths inside an allowed
+      folder, and never passes frontend strings to a shell or SQL.
+
+  - id: TAURI-04
+    title: Updates are signed and the signing key stays offline
+    tech: [tauri]
+    deploy: [desktop]
+    owasp: A08
+    severity: high
+    stage: [weekly]
+    check: >
+      The updater has a pubkey and HTTPS endpoints; the private signing key lives only in
+      your password manager and the release workflow's secrets.
+    grep:
+      files: ['**/tauri.conf.json']
+      when: '"updater"'
+      require: '"pubkey"'
+
+  - id: TAURI-05
+    title: Release builds ship without devtools
+    tech: [tauri]
+    deploy: [desktop]
+    owasp: A02
+    severity: medium
+    stage: [S6]
+    paths: ['**/Cargo.toml']
+    check: The tauri crate's devtools feature is not enabled for release builds.
+    grep:
+      files: ['**/Cargo.toml']
+      forbid: 'tauri\s*=\s*\{[^}]*"devtools"'
+
+  # ---------------------------------------------------------------- Android wrapper
+
+  - id: DROID-01
+    title: Digital Asset Links match the Play signing key
+    tech: [twa]
+    deploy: [play-store]
+    env: [prod]
+    owasp: A07
+    severity: high
+    stage: [weekly]
+    check: >
+      /.well-known/assetlinks.json on the production domain lists the package name and
+      the SHA-256 of the Play App Signing certificate, not only the upload key.
+    grep:
+      files: ['**/public/.well-known/assetlinks.json']
+      require: 'sha256_cert_fingerprints'
+      missing: fail
+
+  - id: DROID-02
+    title: The Capacitor WebView allows no cleartext, debugging or open navigation
+    tech: [capacitor]
+    owasp: A02
+    severity: high
+    stage: [S6]
+    paths: ['**/capacitor.config.*', '**/AndroidManifest.xml']
+    check: >
+      server.cleartext is off, server.allowNavigation lists exact hosts,
+      android.webContentsDebuggingEnabled is off for release, and the manifest sets
+      neither usesCleartextTraffic nor debuggable.
+    grep:
+      files: ['**/capacitor.config.{ts,js,json}', '**/AndroidManifest.xml']
+      forbid: 'cleartext\s*:\s*true|allowNavigation\s*:\s*\[[^\]]*[\x27"]\*[\x27"]|webContentsDebuggingEnabled\s*:\s*true|usesCleartextTraffic="true"|android:debuggable="true"'
+
+  - id: DROID-03
+    title: The Android app asks only for what it uses and ships no secrets
+    deploy: [play-store]
+    env: [prod]
+    owasp: A02
+    severity: high
+    stage: [weekly]
+    check: >
+      Declared permissions match features (microphone for ear training, nothing more),
+      the Play data-safety form matches what the app does with audio, and nothing secret
+      is bundled, because anything in the APK or the wrapped site is public.
+
+  - id: DROID-04
+    title: Play App Signing is on and the accounts are protected
+    deploy: [play-store]
+    env: [prod]
+    owasp: A08
+    severity: high
+    stage: [weekly]
+    check: >
+      Play App Signing is on, the upload key is stored outside the repo (password manager
+      and CI secret), and the Play Console account uses 2-step verification.
+
+  # ---------------------------------------------------------------- Cloudflare Workers
+
+  - id: CF-01
+    title: Worker secrets are not plain vars in the wrangler config
+    deploy: [cloudflare]
+    owasp: A02
+    severity: blocker
+    stage: [S6, weekly]
+    paths: ['**/wrangler.{toml,json,jsonc}']
+    check: Secrets are set with wrangler secret put or the dashboard, never as vars in the committed config.
+    grep:
+      files: ['**/wrangler.{toml,json,jsonc}']
+      forbid: '(?im)^\s*"?\w*(SECRET|TOKEN|PASSWORD|PRIVATE_KEY|API_KEY)\w*"?\s*[:=]\s*"[^"]+"'
+
+  - id: CF-02
+    title: D1 queries bind parameters
+    deploy: [cloudflare]
+    owasp: A05
+    severity: blocker
+    stage: [S6]
+    content: '\.prepare\('
+    check: Queries use prepare(...).bind(...); a template string with ${} never reaches prepare().
+    grep:
+      files: ['**/*.{ts,js}']
+      forbid: '\.prepare\(\s*`[^`]*\$\{'
+
+  - id: CF-03
+    title: R2 buckets are private unless the content is public
+    deploy: [cloudflare]
+    env: [prod]
+    owasp: A01
+    severity: high
+    stage: [weekly]
+    check: Public access (r2.dev or a custom domain) is on only for buckets that hold public assets.
+    mcp: 'Cloudflare r2_buckets_list and r2_bucket_get'
+
+  # ---------------------------------------------------------------- Docker / self-hosted
+
+  - id: DOCKER-01
+    title: Images pin base tags and carry no secrets
+    deploy: [docker]
+    env: [prod]
+    owasp: A02
+    severity: high
+    stage: [S6]
+    paths: ['**/Dockerfile*']
+    check: >
+      Base images use a version tag or digest (never latest), and secrets come from
+      runtime env or build secrets, never ARG or ENV.
+    grep:
+      files: ['**/Dockerfile*']
+      forbid: '(?im)^FROM\s+\S+:latest\b|^\s*(ARG|ENV)\s+\w*(SECRET|TOKEN|PASSWORD|PRIVATE_KEY)'
+
+  - id: DOCKER-02
+    title: The image runs as a non-root user
+    deploy: [docker]
+    env: [prod]
+    owasp: A02
+    severity: high
+    stage: [S6]
+    paths: ['**/Dockerfile*']
+    check: The final stage sets USER to a non-root user.
+    grep:
+      files: ['**/Dockerfile*']
+      require: '^USER\s+(?!root\b|0\b)\S+'
+
+  - id: DOCKER-03
+    title: The release image has no high or critical vulnerabilities
+    deploy: [docker]
+    env: [prod]
+    owasp: A03
+    severity: high
+    stage: [S8, weekly]
+    check: The built image is scanned with a pinned scanner version before it is deployed.
+    run: 'grype {{image}} --fail-on high'

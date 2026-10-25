@@ -1,0 +1,15 @@
+{
+  "name": "graph-driven-quiz-first-gated-workflow",
+  "description": "The Graph-Driven Quiz-First Gated Workflow plugin for Claude Code, used to develop Note Noodle.",
+  "owner": {
+    "name": "olteanalexandru",
+    "url": "https://github.com/olteanalexandru"
+  },
+  "plugins": [
+    {
+      "name": "flow",
+      "source": "./",
+      "description": "Quiz-first, graph-checked, Playwright-gated workflow for Claude Code, with security checks by stack and an adaptive token budget."
+    }
+  ]
+}

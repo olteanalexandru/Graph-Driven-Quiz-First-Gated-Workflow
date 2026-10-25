@@ -1,0 +1,17 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "*.githubusercontent.com",
+        "registry.npmjs.org",
+        "*.npmjs.org",
+        "crates.io",
+        "*.crates.io",
+        "pypi.org",
+        "files.pythonhosted.org"
+      ]
+    }
+  }
+}

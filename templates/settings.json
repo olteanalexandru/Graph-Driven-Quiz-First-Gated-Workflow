@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./**/*.pem)",
+      "Read(./**/*.key)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)"
+    ]
+  },
+  "advisorModel": "opus",
+  "autoCompactWindow": 250000,
+  "promptSuggestionEnabled": false,
+  "statusLine": {
+    "type": "command",
+    "command": "python3 \"$(git rev-parse --show-toplevel)/.flow/statusline.py\""
+  }
+}
