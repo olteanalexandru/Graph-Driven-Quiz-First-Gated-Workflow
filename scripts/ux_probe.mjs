@@ -82,6 +82,7 @@ function inspect({ root, selector }) {
 function focusInfo({ root }) {
   const el = document.activeElement;
   if (!el || el === document.body) return null;
+  if (!el.__flowUid) el.__flowUid = (window.__flowNext = (window.__flowNext || 0) + 1);
   const s = getComputedStyle(el);
   const r = el.getBoundingClientRect();
   const ring = (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) || (s.boxShadow && s.boxShadow !== 'none');
@@ -90,6 +91,8 @@ function focusInfo({ root }) {
   const top = document.elementFromPoint(cx, cy);
   const scope = root ? document.querySelector(root) : document.body;
   return {
+    uid: el.__flowUid,
+    multiStop: el.tagName === 'INPUT' && ['date', 'time', 'datetime-local', 'month', 'week'].includes(el.type),
     id: `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}`,
     name: (el.getAttribute('aria-label') || (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent) ||
       el.innerText || el.value || '').trim().slice(0, 40),
@@ -217,11 +220,11 @@ async function main() {
       await page.keyboard.press('Tab');
       const f = await page.evaluate(focusInfo, { root: cfg.root });
       if (!f) continue;
-      const key = `${f.id}|${f.name}`;
-      same = key === last ? same + 1 : 0;
-      last = key;
-      if (same >= 2) { order.push({ ...f, trap: true }); break; }
-      if (order.length && order[0].id === f.id && order[0].name === f.name) break;   // wrapped around
+      same = f.uid === last ? same + 1 : 0;                   // the same element, not just the same name
+      last = f.uid;
+      if (same >= 2 && !f.multiStop) { order.push({ ...f, trap: true }); break; }
+      if (same) continue;                                       // date and time inputs take several Tabs
+      if (order.length && order[0].uid === f.uid) break;        // wrapped around
       order.push(f);
     }
     const inRoot = order.filter((f) => f.inRoot);
@@ -242,7 +245,7 @@ async function main() {
   }
   try {
     const width = cfg.reflow_width || 320;
-    const { context, page } = await open(browser, cfg, first, [width, 640]);
+    const { context, page } = await open(browser, cfg, first, [width, 640], { isMobile: false, hasTouch: false });
     report.reflow = { width, overflowX: (await page.evaluate(inspect, { root: cfg.root, selector: CONTROLS })).overflowX };
     await context.close();
     const reduced = await open(browser, cfg, first, wide, { reducedMotion: 'reduce' });

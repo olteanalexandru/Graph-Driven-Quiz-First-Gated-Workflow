@@ -589,8 +589,11 @@ for item, impact, budget in [
     ("ITEM-011", {"paths": ["src/y/"], "contracts": {"uses": ["bus:progress/*"]}, "nodes": ["e", "f"]}, "standard"),
     ("ITEM-012", {"paths": ["src/z/"], "nodes": ["a", "b", "c", "x"]}, "standard"),
     ("ITEM-013", {"paths": ["src/w/"], "nodes": ["q"]}, "deep"),
+    ("ITEM-014", {"paths": ["src/v/"], "contracts": {"changes": ["api:/xp"]}}, "standard"),
+    ("ITEM-015", {"paths": ["src/u/"], "contracts": {"uses": ["api:/xp"]}}, "standard"),
 ]:
-    write(f"docs/items/{item}/spec.md", spec(item).replace("budget: standard", f"budget: {budget}"), root=orch)
+    deps = "[ITEM-099]" if item == "ITEM-014" else "[]"
+    write(f"docs/items/{item}/spec.md", spec(item, deps=deps).replace("budget: standard", f"budget: {budget}"), root=orch)
     write(f"docs/items/{item}/impact.json", json.dumps(impact), root=orch)
 write("README.md", "x\n", root=orch)
 sh("git", "add", "-A", cwd=orch)
@@ -606,6 +609,8 @@ expect("next: the contract user waits for the item that changes the contract",
        "wait: ITEM-011: uses a contract that ITEM-010 changes" in p.stdout, p.stdout)
 expect("next: shared context serializes", "wait: ITEM-012: run after ITEM-010: shares 3 of 4 graph nodes" in p.stdout, p.stdout)
 expect("next: independent items start together", "start now: ITEM-010, ITEM-013" in p.stdout, p.stdout)
+expect("next: a contract user waits even while the changer waits for its own dependency",
+       "wait: ITEM-015: uses a contract that ITEM-014 changes" in p.stdout, p.stdout)
 p = osched("waves")
 expect("waves: contract user and context sharer go to wave 2",
        "wave 1: ITEM-010, ITEM-013" in p.stdout and "wave 2: ITEM-011, ITEM-012" in p.stdout, p.stdout)

@@ -182,7 +182,7 @@ def git_subcommand(tokens):
 # A redirect into a file (not 2>&1, >&2 or /dev/null), or a command that writes or restores files.
 SHELL_WRITE = re.compile(r"(?<![\d&>])>{1,2}(?!>|\s*(?:&|/dev/null\b))|\bsed\s+-i|\btee\b|\bmv\b|\bcp\b|\brm\b"
                          r"|\bperl\s+-i|\btruncate\b|write_text|open\(|\bgit\s+(?:checkout|restore)\b")
-DESIGN_PATH = re.compile(r"docs/items/[^/\s'\"]+/(?:uml/|data-structures\.md|messages\.md|performance\.md|baseline\.md)")
+DESIGN_PATH = re.compile(r"docs/items/[^/\s'\"]+/(?:uml\b|data-structures\.md|messages\.md|performance\.md|baseline\.md)")
 
 
 def bash_problems(command, base, branch):

@@ -37,6 +37,7 @@ STAGES = ["S1", "S2", "S3", "S4", "S5", "S6", "S6a", "S7", "S7a", "S8", "done"]
 GLOB_CHARS = "*?{"                   # not "[": Next.js route folders like app/notes/[id]/ are plain paths
 DESIGN_DOCS = ("data-structures.md", "messages.md", "performance.md", "baseline.md")
 LOCK_NAME = "design.lock.json"
+SAFE_PATH = re.compile(r"[\w./@+\-\[\]() ]+")       # test paths handed to a shell: no metacharacters
 ESTIMATE_USD = {"lean": 2.0, "standard": 8.0, "deep": 25.0}   # until 3 shipped items per level give a median
 
 
@@ -248,7 +249,9 @@ def item_budget(root, cfg, item):
 
 
 def verdict_pass(text):
-    return bool(re.search(r"(?im)^\W*(verdict|result)?\W*PASS\b", text or ""))
+    """True when the first non-empty line is the verdict PASS (a PASS bullet further down does not count)."""
+    first = next((ln for ln in (text or "").splitlines() if ln.strip()), "")
+    return bool(re.match(r"(?i)^\W*(verdict|result)?\W*PASS\b", first))
 
 
 def item_stage(root, item, cfg=None):
@@ -409,7 +412,9 @@ def load_lock(root, item):
 
 def shell_quote(text):
     """Quote one argument for the platform shell that subprocess(shell=True) runs (cmd.exe on Windows)."""
-    return subprocess.list2cmdline([str(text)]) if os.name == "nt" else shlex.quote(str(text))
+    if os.name != "nt":
+        return shlex.quote(str(text))
+    return '"' + re.sub(r'["%!^]', "", str(text)) + '"'     # inside quotes cmd.exe keeps & | < > literal
 
 
 def write_json(path, data):
@@ -524,7 +529,7 @@ def baseline_test_files(root, item):
             continue
         for p in test_paths(row.get("tests", "")):
             rel = rel_path(p, root)
-            if rel and item not in rel and (Path(root) / rel).is_file():
+            if rel and item not in rel and SAFE_PATH.fullmatch(rel) and (Path(root) / rel).is_file():
                 files.add(rel)
     return sorted(files)
 

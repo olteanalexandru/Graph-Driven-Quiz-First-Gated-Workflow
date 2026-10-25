@@ -151,7 +151,9 @@ def cmd_next(root, cfg, args):
     cap = lib.capacity(root, cfg, items, claims)
     cp = critical_path(items)
     ready = [unit(i["id"], None, i) for i in sorted(ready_items(items, set(claims)), key=lambda i: (-cp[i["id"]], i["id"]))]
-    order = implicit_deps(ready)
+    pending = [unit(i["id"], None, i) for i in items
+               if i["status"] in ("approved", "in-progress") and i["claim"] and i["id"] not in claims]
+    order = implicit_deps(pending)          # a changer still waiting on its own deps also goes first
     remaining = cap["remaining"]
     chosen, blocked = [], []
     for cand in ready:

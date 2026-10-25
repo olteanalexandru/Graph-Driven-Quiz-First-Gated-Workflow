@@ -28,3 +28,6 @@ disable-model-invocation: true
 8. After the merge, from the main checkout: `graphify update .` (add `--force` when files
    were deleted), `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/schedule.py release $0`,
    `git worktree remove ../<repo>-$0`, `git branch -d $0`, then show `schedule.py next`.
+   After a squash merge `git branch -d` refuses (the branch tip is not an ancestor of the
+   base) and the hooks block `-D`: once the merge is confirmed, ask the user to run
+   `git branch -D $0`.
