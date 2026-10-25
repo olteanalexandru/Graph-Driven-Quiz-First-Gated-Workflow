@@ -1,8 +1,8 @@
 # Design: adaptive planning, UX audit and safe orchestration (v0.2)
 
-Status: **preliminary, editable**. Change anything in this file, including the
-diagrams; your edits win over the code, and the code and tests are brought in line
-with them. Each decision (D#) is cited by the diagrams and by the acceptance criteria
+Status: **implemented in v0.2, still editable**. Change anything in this file,
+including the diagrams; your edits win over the code, and the code and tests are
+brought in line with them. Each decision (D#) is cited by the diagrams and by the acceptance criteria
 (AC#) at the end, and each AC names the test that checks it.
 
 ## What is asked
@@ -30,7 +30,7 @@ Both new modes reuse the existing gated flow; nothing runs outside it.
 | D6 | Design approval (`design.py approve`) is required before code edits when `clarify: deep`, or always with `design_approval: "always"` | approval for every item | quick items keep today's speed |
 | D7 | `trace.py check` keeps spec, design, baseline, budgets and tests in sync and lists diagram participants it cannot find in the code; the architect and reviewer confirm drift with the graph | a graph-only check | the script runs without Graphify and in CI |
 | D8 | `performance.md`: per path the runs, data size, latency budget and memory; complexity analysis only when a threshold is crossed; budgets PB# with a metric, a number and a test | Big-O for every structure | tokens go where the workload is |
-| D9 | Planning (design, impact, re-plan, integration review) runs at effort `max` when the item is complex (deep budget, security blockers, an `api:` or `schema:` contract change, more than 2 domains or about 25 nodes); otherwise at the budget's `planning.effort`. Claude Code falls back to the highest level the model supports | max effort everywhere | effort costs tokens on every turn |
+| D9 | Planning (design, impact, re-plan, integration review) runs at effort `max` when the item is complex (deep budget, security blockers, an `api:` or `schema:` contract change, more than 2 domains or about 25 nodes); otherwise at the budget's `planning_effort`. Claude Code falls back to the highest level the model supports | max effort everywhere | effort costs tokens on every turn |
 | D10 | Plan proposes a split when the impact set passes `split_at` (40 nodes or 3 domains) | building it as one item | smaller claims run in parallel and review faster |
 | D11 | `baseline.md` lists what the touched components do today (F#) with their tests and a plan per row: keep, change (D#) or remove (D#). S4 writes characterization specs for untested keep rows; the Stop hook runs `baseline_check` on the listed test files | relying on the full suite | the full suite may not cover the component |
 | D12 | New stage S6a Audit, run at the end of `/flow:build` by the `auditor` agent when the item has a baseline or a UX audit. It writes `audit.md` with a verdict. After `ux_audit.max_rounds` rounds (3) the remaining findings need the user's acceptance as D# rows | a separate audit pipeline | same gates, same files |
@@ -170,7 +170,7 @@ sequenceDiagram
 
 | File | Holds | Written by |
 |---|---|---|
-| `docs/items/<ID>/design.lock.json` | `{"files": {path: sha256}, "approved": {"at", "files": {path: sha256}} \| null}` | hooks, `design.py` |
+| `docs/items/<ID>/design.lock.json` | `{"files": {path: sha256}, "approved": {"at", "files", "amended"} \| null, "unlocked": [path]}` | hooks, `design.py` |
 | `docs/items/<ID>/baseline.md` | F# table: feature, where, tests, plan | architect or auditor, the user edits |
 | `docs/items/<ID>/performance.md` | workload table, analysis for marked rows, PB# budgets | architect |
 | `docs/items/<ID>/audit.md` | frontmatter `kind`, `round`, `verdict`; interaction map, state matrix, U# findings, rounds, trade-offs | auditor |

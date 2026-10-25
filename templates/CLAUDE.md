@@ -1,9 +1,11 @@
 <!-- flow:start (managed by /flow:init; put your own notes outside this block) -->
 ## Workflow
-- Every change is an item: /flow:quiz -> /flow:plan -> /flow:build -> /flow:review -> /flow:ship. /flow:next shows what can start.
-- One item = one branch = one worktree = one writer. Never split an item across parallel agents; no /batch or agent teams for code.
+- Every change is an item: /flow:quiz -> /flow:plan -> /flow:build -> /flow:review -> /flow:ship (/flow:integrate when items finished together). UX work on one component starts with /flow:ux-audit. /flow:next shows what can start.
+- One item = one branch = one worktree = one writer. Never split an item across parallel agents; no /batch or agent teams for code. Start items only when /flow:next says so: it checks files, contracts, shared context and the cost budget.
 - Edit only files in the item's claim (from docs/items/<ID>/impact.json, refreshed with `schedule.py claim <ID>`) or files named with the item ID. If a hook blocks an edit, stop and re-plan; never work around it, including through shell commands.
 - Features talk only through the bus (typed messages, one named handler per command); business rules go in pure helpers.
+- Design files in docs/items/<ID>/ (uml/, messages.md, data-structures.md, performance.md, baseline.md) that the user edited are their decisions: read them, never regenerate them; the hook asks before any change. Spec, design and tests change together (`trace.py check <ID>`).
+- Features marked keep in baseline.md must keep working; changing or removing one needs the user's answer, recorded as a D# row.
 - Never change .flow/config.json, CLAUDE.md or .claude/ as part of an item.
 
 ## Graph first, short output

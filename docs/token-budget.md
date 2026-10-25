@@ -16,6 +16,9 @@ tune them per project. `/flow:budget` shows or changes an item's level.
 | Impact | direct callers and callees | plus one hop of importers | plus a second hop of callers, ranked by test links |
 | Gate tests | unit + the item's specs | plus `@smoke` | full Playwright suite |
 | Handoff point | 40% of context | 60% | 75% |
+| Planning effort | medium | high | max |
+| Audit (auditor) | main session | sonnet | opus |
+| Starting estimate | $2 | $8 | $25 |
 
 There is no tier L budget: the quiz splits an item that big into M items first.
 `/flow:build` claims the item's files, creates its worktree next to the repository and
@@ -37,6 +40,50 @@ One level up, logged in the spec's Budget log, on any of these:
 5. you ask.
 
 Budgets do not carry over between items.
+
+## Effort for planning
+
+Reasoning effort is spent where a wrong answer costs most: the design, the impact set,
+re-planning and the integration review. An item is complex when its spec says
+`complex: true` (auth, payments, RLS, an API or schema contract change, more than two
+domains), its budget is deep, or planning finds it so; complex planning runs at effort
+`max`, which Claude Code lowers to the highest level the model supports. Other items
+plan at the budget's `planning_effort`. Implementation keeps the session's effort.
+
+Workload decides how much analysis a design gets: `performance.md` records how often
+each path runs, how much data it sees, and its latency and memory limits. Complexity
+analysis is written only for paths over a threshold, and critical paths get budgets
+that tests measure.
+
+## Running items in parallel
+
+More agents are not more progress: two items that read the same code load the same
+context twice, and two items that touch the same contract cost a rework when they
+meet. `schedule.py next` starts an item beside the active ones only when:
+
+1. hard checks pass: no overlapping files, folders or hot tokens, and no contract one
+   item changes that the other changes or uses (`impact.json` `contracts`; the user of
+   a contract goes after the item that changes it);
+2. soft checks pass: they share less than half of the smaller item's graph nodes
+   (`shared_context_limit`), and they are not both high rework risk in one domain;
+3. capacity allows it: the WIP limit, the 5-hour rate limit floor
+   (`rate_limit_floor`, default: keep 20% free) and the global budget
+   (`orchestration.cost_budget_usd` per `budget_window`).
+
+Capacity comes from a usage ledger: the status line writes each session's item, cost
+and rate-limit use to `<git-common-dir>/flow-usage/` (the status line receives the
+session's cost, not a running token count, so cost is the consumption measure).
+Without it, every active item
+counts at its estimate times `unknown_usage_factor` (1.5). Estimates start at
+`estimate_usd` per level and become the median cost of shipped items once a level has
+three (`docs/items/<ID>/metrics.json`, written by `/flow:ship`). The claim refuses past
+any hard limit; only the user can pass `--force`. `schedule.py usage` shows the numbers.
+
+Items that finish together go through `/flow:integrate` before either ships: their
+branches are merged in a temporary worktree, `integration_checks` run on the result, and
+a combined review looks for duplicated work and contract mismatches. Metrics record
+rework rounds (review, audit and integration fixes), gate failures, escalations and the
+items each one ran beside, so later scheduling can see which pairings cost more.
 
 ## How each lever works (Claude Code facts this design relies on)
 

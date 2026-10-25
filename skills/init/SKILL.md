@@ -21,8 +21,13 @@ or show the difference and ask. Templates are in `${CLAUDE_PLUGIN_ROOT}/template
 3. Config: write `.flow/config.json` from `templates/config.json`. Mode `enforce` for a
    new project or with `--enforce`; `warn` for an existing one. Adjust `hot_files`,
    `shared` and `aliases` (from tsconfig `paths`) to the real layout, and make each
-   budget's `stop_checks` use the project's real test commands (Rust: `cargo test
-   --quiet`). Add `.flow/state/` to .gitignore.
+   budget's `stop_checks`, `baseline_check` and `integration_checks` use the project's
+   real test commands (Rust: `cargo test --quiet`). Set `ux_audit.base_url` to the dev
+   server. Ask once, in one AskUserQuestion, whether clarification should be deep by
+   default (`deep_clarification`) and whether to set a global cost budget per day
+   (`orchestration.cost_budget_usd`, null for none). Add `.flow/state/` to .gitignore.
+   If a formatter rewrites markdown on save or commit (prettier, lint-staged), add
+   `docs/items/` to its ignore file: the design guard compares file hashes.
 4. CLAUDE.md: insert `templates/CLAUDE.md` between `<!-- flow:start -->` and
    `<!-- flow:end -->` (replace the block if it exists; keep everything else). Keep the
    whole file under 200 lines; move long project notes into `.claude/rules/`.
@@ -42,7 +47,8 @@ or show the difference and ask. Templates are in `${CLAUDE_PLUGIN_ROOT}/template
    `graphify update .`.
 9. Playwright (web stacks): if missing, add @playwright/test, install Chromium, and copy
    `templates/nextjs/playwright.config.ts` when there is no config yet. Then
-   `npx playwright init-agents --loop=claude`.
+   `npx playwright init-agents --loop=claude`. The UX audit uses `@axe-core/playwright`
+   when it is installed; it is a new dependency, so ask before adding it.
 10. Bus (nextjs, unless `--no-bus`): if there is no bus folder, copy
    `templates/nextjs/bus/` to `<src>/bus/`, `templates/nextjs/helpers/xp.ts` to
    `<src>/helpers/` (example; delete if unused), and `templates/nextjs/scripts/bus-gen.mjs`

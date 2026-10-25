@@ -1,0 +1,13 @@
+{
+  "base_url": "http://localhost:3000",
+  "root": "[data-testid=component-root]",
+  "viewports": [[375, 667], [1280, 800]],
+  "reflow_width": 320,
+  "states": [
+    {"name": "default", "path": "/route"},
+    {"name": "loading", "path": "/route", "mock": [{"url": "**/api/thing**", "action": "hang"}]},
+    {"name": "empty", "path": "/route", "mock": [{"url": "**/api/thing**", "action": "json", "body": []}]},
+    {"name": "error", "path": "/route", "mock": [{"url": "**/api/thing**", "action": "status", "status": 500}]},
+    {"name": "answered", "path": "/route", "steps": [{"click": "button:has-text(\"Start\")"}, {"press": "Enter"}, {"wait": 300}]}
+  ]
+}

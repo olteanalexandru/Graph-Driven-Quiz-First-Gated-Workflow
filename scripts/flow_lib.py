@@ -1,32 +1,50 @@
 """Shared helpers for the workflow scripts and hooks. Standard library only (Python 3.9+)."""
 from __future__ import annotations
 
+import datetime as dt
+import hashlib
 import json
+import os
 import re
+import shlex
+import statistics
 import subprocess
+import time
 from pathlib import Path
 
 CONFIG_REL = ".flow/config.json"
 DEFAULT_CONFIG = {
     "mode": "warn",                 # warn: hooks report problems; enforce: hooks block them
     "base_branch": "main",
-    "wip_limit": 2,                 # items in progress at the same time
+    "wip_limit": 2,                 # items in progress at the same time (hard limit; claim --force to pass it)
     "item_pattern": r"ITEM-\d+",
     "hot_files": {},                # token -> files many items touch, e.g. {"bus-registry": ["src/bus/dispatch.ts"]}
-    "domains": {},                  # domain -> folder, for the coupling scan
+    "domains": {},                  # domain -> folder, for the coupling scan and the scheduler
     "shared": [],                   # folders every domain may import (bus, helpers, ui kit)
     "aliases": {"@/": "src/"},      # import alias -> folder
     "stop_checks": [],              # commands the Stop hook runs when the budget has none; {item} is replaced
+    "baseline_check": {},           # test-file glob -> command for the item's baseline tests; {files} is replaced
+    "deep_clarification": False,    # /flow:quiz default: false = quick (documented assumptions), true = deep
+    "design_approval": "deep",      # deep: approval before code for deep-clarified items | always | never
+    "split_at": {"nodes": 40, "domains": 3},
+    "ux_audit": {"max_rounds": 3},
+    "orchestration": {},            # global cost budget and scheduling limits, see templates/config.json
+    "integration_checks": [],       # commands run on the merged result of items that finished together
     "budget_default": "standard",
     "budgets": {},                  # lean | standard | deep settings, see templates/config.json
 }
-STAGES = ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "done"]
+STAGES = ["S1", "S2", "S3", "S4", "S5", "S6", "S6a", "S7", "S7a", "S8", "done"]
 GLOB_CHARS = "*?{"                   # not "[": Next.js route folders like app/notes/[id]/ are plain paths
+DESIGN_DOCS = ("data-structures.md", "messages.md", "performance.md", "baseline.md")
+LOCK_NAME = "design.lock.json"
+SAFE_PATH = re.compile(r"[\w./@+\-\[\]() ]+")       # test paths handed to a shell: no metacharacters
+ESTIMATE_USD = {"lean": 2.0, "standard": 8.0, "deep": 25.0}   # until 3 shipped items per level give a median
 
 
 def git(cwd, *args):
     try:
-        p = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=30)
+        p = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=30,
+                           encoding="utf-8", errors="replace")
     except (OSError, subprocess.TimeoutExpired):
         return None
     return p.stdout.strip() if p.returncode == 0 else None
@@ -231,8 +249,15 @@ def item_budget(root, cfg, item):
     return level, (cfg.get("budgets") or {}).get(level) or {}
 
 
-def item_stage(root, item):
+def verdict_pass(text):
+    """True when the first non-empty line is the verdict PASS (a PASS bullet further down does not count)."""
+    first = next((ln for ln in (text or "").splitlines() if ln.strip()), "")
+    return bool(re.match(r"(?i)^\W*(verdict|result)?\W*PASS\b", first))
+
+
+def item_stage(root, item, cfg=None):
     """Best guess of the item's stage from the files it has."""
+    cfg = cfg if cfg is not None else (load_config(root) or DEFAULT_CONFIG)
     d = item_dir(root, item)
     spec = read_spec(root, item)
     if not spec or spec.get("status", "draft") == "draft":
@@ -242,15 +267,29 @@ def item_stage(root, item):
     tier = spec.get("tier", "M")
     if tier != "S" and not (d / "uml").exists():
         return "S2"
+    if tier != "S" and design_approval_required(cfg, spec) and design_state(root, item)["status"] != "approved":
+        return "S2"
     if not (d / "impact.json").exists():
         return "S3"
     review = d / "review.md"
     if review.exists():
-        text = review.read_text("utf-8", "ignore")
-        return "S8" if re.search(r"(?im)^\W*(verdict|result)?\W*PASS\b", text) else "S5"
+        if not verdict_pass(review.read_text("utf-8", "ignore")):
+            return "S5"
+        partners = integration_partners(root, cfg, item)
+        if partners and not integration_covered(root, item, partners):
+            return "S7a"
+        return "S8"
     tests = [p for p in Path(root).glob("tests/**/*") if item in p.name]
     tests += [p for p in Path(root).glob("specs/*") if item in p.name]
-    return "S5" if tests else "S4"
+    if not tests:
+        return "S4"
+    if audit_required(root, item):
+        audit = read_audit(root, item)
+        if audit.get("verdict") == "FAIL":
+            return "S6a"
+        if audit.get("verdict") in ("PASS", "ACCEPTED") and audit.get("phase") != "discovery":
+            return "S7"
+    return "S5"
 
 
 def as_list(x):
@@ -272,13 +311,450 @@ def all_items(root):
                 impact = json.loads((d / "impact.json").read_text("utf-8"))
             except json.JSONDecodeError as e:
                 impact_error = f"impact.json is not valid JSON ({e})"
+        impact = impact if isinstance(impact, dict) else None
         items.append({
             "id": d.name,
             "status": spec.get("status", "draft"),
             "tier": spec.get("tier", "M"),
             "budget": spec.get("budget", ""),
             "deps": as_list(spec.get("deps")),
-            "claim": claim_from_impact(impact) if isinstance(impact, dict) else None,
+            "claim": claim_from_impact(impact) if impact else None,
+            "contracts": contracts_of(impact),
+            "nodes": sorted({n for n in (impact or {}).get("nodes") or [] if isinstance(n, str)}),
+            "risk": str((impact or {}).get("risk") or "").lower(),
             "error": impact_error,
         })
     return items
+
+
+# ---------------------------------------------------------------- markdown helpers
+
+def md_section(text, title):
+    """Body of the first '## <title>' section (title matched case-insensitively at the start)."""
+    m = re.search(r"(?im)^##\s+" + re.escape(title) + r"[^\n]*\n", text or "")
+    if not m:
+        return ""
+    rest = text[m.end():]
+    nxt = re.search(r"(?m)^#{1,2}\s", rest)
+    return rest[:nxt.start()] if nxt else rest
+
+
+def md_tables(text):
+    """Every markdown table in text as a list of row dicts keyed by lower-case header."""
+    tables, block = [], []
+    for line in (text or "").splitlines() + [""]:
+        if line.strip().startswith("|"):
+            block.append(line.strip())
+            continue
+        if len(block) >= 2 and re.fullmatch(r"\|?[\s:|-]+\|?", block[1]):
+            head = [c.strip().lower() for c in block[0].strip("|").split("|")]
+            rows = []
+            for row in block[2:]:
+                cells = [c.strip() for c in row.strip("|").split("|")]
+                rows.append({h: (cells[i] if i < len(cells) else "") for i, h in enumerate(head)})
+            tables.append(rows)
+        block = []
+    return tables
+
+
+def first_col(row):
+    return next(iter(row.values()), "") if row else ""
+
+
+# ---------------------------------------------------------------- editable design (lock and approval)
+
+def split_item_doc(rel):
+    """(item, path inside the item folder) for docs/items/<ID>/..., else (None, None)."""
+    m = re.match(r"docs/items/([^/]+)/(.+)$", rel or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+UML_EXT = (".mmd", ".md")
+
+
+def is_design_file(sub):
+    """Design docs, and Mermaid or Markdown files under uml/ (not .DS_Store, swap files or rendered SVGs)."""
+    if not sub:
+        return False
+    if sub in DESIGN_DOCS:
+        return True
+    parts = sub.split("/")
+    return parts[0] == "uml" and len(parts) > 1 and sub.endswith(UML_EXT) and not any(x.startswith(".") for x in parts)
+
+
+def text_hash(path):
+    """sha256 of a text file with line endings and trailing whitespace normalized."""
+    data = Path(path).read_bytes().replace(b"\r\n", b"\n").rstrip()
+    return hashlib.sha256(data).hexdigest()
+
+
+def design_files(root, item):
+    d = item_dir(root, item)
+    found = [name for name in DESIGN_DOCS if (d / name).is_file()]
+    if (d / "uml").is_dir():
+        found += sorted(r for r in (p.relative_to(d).as_posix() for p in (d / "uml").rglob("*") if p.is_file())
+                        if is_design_file(r))
+    return found
+
+
+def load_lock(root, item):
+    """The item's design lock. A broken lock carries "_error" and counts every file as edited by hand."""
+    path = item_dir(root, item) / LOCK_NAME
+    lock = {}
+    if path.exists():
+        try:
+            lock = json.loads(path.read_text("utf-8"))
+        except (json.JSONDecodeError, OSError):
+            lock = {"_error": f"{path.name} is not valid JSON"}
+    if not isinstance(lock, dict):
+        lock = {"_error": f"{path.name} is not a JSON object"}
+    if isinstance(lock.get("unlocked"), list):          # older locks: an unlock without a hash is not honoured
+        lock["unlocked"] = {}
+    shapes = {"files": dict, "approved": (dict, type(None)), "unlocked": dict}
+    bad = [k for k, t in shapes.items() if k in lock and not isinstance(lock[k], t)]
+    if bad or not all(isinstance(v, str) for v in (lock.get("files") or {}).values()):
+        lock = {"_error": f"{path.name} has an unexpected shape ({', '.join(bad) or 'files'})"}
+    if lock.get("approved") is not None and not isinstance(lock["approved"].get("files", {}), dict):
+        lock = {"_error": f"{path.name} has an unexpected shape (approved.files)"}
+    lock.setdefault("item", item)
+    lock.setdefault("files", {})
+    lock.setdefault("approved", None)
+    lock.setdefault("unlocked", {})
+    return lock
+
+
+def shell_quote(text):
+    """Quote one argument for the platform shell that subprocess(shell=True) runs (cmd.exe on Windows)."""
+    if os.name != "nt":
+        return shlex.quote(str(text))
+    return '"' + re.sub(r'["%!^]', "", str(text)) + '"'     # inside quotes cmd.exe keeps & | < > literal
+
+
+def write_json(path, data):
+    """Write JSON through a temp file and a rename, so readers never see half a file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", "utf-8")
+    os.replace(tmp, path)
+
+
+def save_lock(root, item, lock):
+    lock = {k: v for k, v in lock.items() if not k.startswith("_")}
+    write_json(item_dir(root, item) / LOCK_NAME, lock)
+
+
+def design_state(root, item):
+    """Design status (none, draft, approved, changed), files edited by hand, files changed since approval."""
+    lock = load_lock(root, item)
+    d = item_dir(root, item)
+    current = {f: text_hash(d / f) for f in design_files(root, item)}
+    hand = sorted(f for f, h in current.items() if lock["files"].get(f) != h)
+    approved = lock.get("approved") or None
+    changed = []
+    if approved:
+        snap = approved.get("files") or {}
+        changed = sorted({f for f in current if snap.get(f) != current[f]} | {f for f in snap if f not in current})
+        status = "changed" if changed else "approved"
+    else:
+        status = "draft" if current else "none"
+    return {"status": status, "hand_edited": hand, "changed": changed, "files": current,
+            "approved_at": (approved or {}).get("at"),
+            "unlocked": [f for f, h in (lock.get("unlocked") or {}).items() if current.get(f) == h],
+            "error": lock.get("_error")}
+
+
+def record_design_write(root, item, sub):
+    """After Claude wrote a design file: remember its hash; an approved design is amended, not reopened."""
+    path = item_dir(root, item) / sub
+    lock = load_lock(root, item)
+    if not path.is_file():
+        lock["files"].pop(sub, None)
+        if lock.get("approved"):
+            lock["approved"].get("files", {}).pop(sub, None)
+    else:
+        h = text_hash(path)
+        lock["files"][sub] = h
+        if lock.get("approved"):
+            lock["approved"].setdefault("files", {})[sub] = h
+            lock["approved"]["amended"] = now_iso()
+    lock["unlocked"].pop(sub, None)
+    save_lock(root, item, lock)
+
+
+def approve_design(root, item, note=""):
+    lock = load_lock(root, item)
+    state = design_state(root, item)
+    lock["files"] = dict(state["files"])
+    lock["approved"] = {"at": now_iso(), "files": dict(state["files"])}
+    if note:
+        lock["approved"]["note"] = note
+    lock["unlocked"] = {}
+    save_lock(root, item, lock)
+    return state
+
+
+def unlock_design(root, item, subs):
+    """One Claude edit per file, valid only while the file keeps the content the user agreed on."""
+    lock = load_lock(root, item)
+    d = item_dir(root, item)
+    for f in subs:
+        lock["unlocked"][f] = text_hash(d / f) if (d / f).is_file() else None
+    save_lock(root, item, lock)
+
+
+def design_approval_required(cfg, spec):
+    mode = (cfg or {}).get("design_approval", "deep")
+    if mode == "always":
+        return True
+    return mode == "deep" and (spec or {}).get("clarify") == "deep"
+
+
+def now_iso():
+    return dt.datetime.now().isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------- baseline and audit
+
+def baseline_rows(root, item):
+    """Rows of the feature table in docs/items/<ID>/baseline.md (rows whose first cell is F<n>)."""
+    path = item_dir(root, item) / "baseline.md"
+    if not path.exists():
+        return []
+    rows = []
+    for table in md_tables(path.read_text("utf-8", "ignore")):
+        rows += [r for r in table if re.fullmatch(r"F\d+", first_col(r))]
+    return rows
+
+
+def test_paths(cell):
+    """Test files named in a baseline Tests cell: 'a.spec.ts:12, b.spec.ts > title' -> [a.spec.ts, b.spec.ts]."""
+    out = []
+    for part in re.split(r"[,;]", cell or ""):
+        part = part.strip().strip("`")
+        if not part or part.lower().startswith(("none", "-")):
+            continue
+        out.append(re.split(r"[:\s>]", part, maxsplit=1)[0])
+    return out
+
+
+def baseline_test_files(root, item):
+    """Existing test files that guard the item's kept features, excluding files named with the item ID."""
+    files = set()
+    for row in baseline_rows(root, item):
+        if not row.get("plan", "keep").lower().startswith("keep"):
+            continue
+        for p in test_paths(row.get("tests", "")):
+            rel = rel_path(p, root)
+            if rel and item not in rel and SAFE_PATH.fullmatch(rel) and (Path(root) / rel).is_file():
+                files.add(rel)
+    return sorted(files)
+
+
+def read_audit(root, item):
+    path = item_dir(root, item) / "audit.md"
+    return parse_frontmatter(path.read_text("utf-8", "ignore")) if path.exists() else {}
+
+
+def audit_required(root, item):
+    d = item_dir(root, item)
+    return (d / "baseline.md").exists() or (d / "audit.md").exists()
+
+
+# ---------------------------------------------------------------- contracts and parallel work
+
+def contracts_of(impact):
+    c = (impact or {}).get("contracts") or {}
+    if not isinstance(c, dict):
+        return {"changes": [], "uses": []}
+    return {k: sorted({x for x in as_list(c.get(k)) if isinstance(x, str) and x.strip()}) for k in ("changes", "uses")}
+
+
+def contract_match(a, b):
+    """api:/progress matches api:/progress; bus:progress/* matches bus:progress/awardXp."""
+    if a == b:
+        return True
+    if a.endswith("*") and b.startswith(a[:-1]):
+        return True
+    return b.endswith("*") and a.startswith(b[:-1])
+
+
+def contract_conflicts(a, b):
+    """A contract one item changes and the other changes or uses."""
+    found = []
+    for mine, theirs in ((a, b), (b, a)):
+        for c in mine.get("changes", []):
+            for o in theirs.get("changes", []) + theirs.get("uses", []):
+                if contract_match(c, o):
+                    found.append(f"contract {c}" if c == o else f"contract {c} ~ {o}")
+    return sorted(set(found))
+
+
+def item_domains(claim, cfg):
+    out = set()
+    for name, folder in (cfg.get("domains") or {}).items():
+        folder = folder.rstrip("/")
+        if any(entries_overlap(p, folder + "/") or p.rstrip("/") == folder for p in (claim or {}).get("paths", [])):
+            out.add(name)
+    return out
+
+
+def soft_blockers(a, b, cfg):
+    """Reasons to run two otherwise independent items one after the other."""
+    orch = cfg.get("orchestration") or {}
+    limit = float(orch.get("shared_context_limit", 0.5))
+    found = []
+    na, nb = set(a.get("nodes") or []), set(b.get("nodes") or [])
+    small = min(len(na), len(nb))
+    if small and len(na & nb) / small >= limit:
+        found.append(f"shares {len(na & nb)} of {small} graph nodes (the same context would be read twice)")
+    if a.get("risk") == "high" and b.get("risk") == "high":
+        common = item_domains(a.get("claim"), cfg) & item_domains(b.get("claim"), cfg)
+        if common:
+            found.append(f"both high rework risk in {', '.join(sorted(common))}")
+    return found
+
+
+def integration_partners(root, cfg, item):
+    """Other claimed items whose branch has a passing review: they are checked together with this one."""
+    partners = []
+    for other in load_claims(root):
+        if other == item:
+            continue
+        text = git(root, "show", f"{other}:docs/items/{other}/review.md")
+        spec = parse_frontmatter(git(root, "show", f"{other}:docs/items/{other}/spec.md") or "")
+        if text and verdict_pass(text) and spec.get("status") != "done":     # done: shipping, already integrated
+            partners.append(other)
+    return sorted(partners)
+
+
+def integration_runs(root):
+    d = common_dir(root) / "flow-integration"
+    runs = []
+    for f in sorted(d.glob("*.json")) if d.exists() else []:
+        try:
+            run = json.loads(f.read_text("utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(run, dict):
+            runs.append(run)
+    return runs
+
+
+def branch_head(root, item):
+    return git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{item}")
+
+
+def integration_covered(root, item, partners=()):
+    """The PASS run that tested the item's current head together with every partner's current head, or None."""
+    heads = {i: branch_head(root, i) for i in [item, *partners]}
+    if not all(heads.values()):
+        return None
+    for run in reversed(integration_runs(root)):
+        tested = run.get("items") or {}
+        if run.get("verdict") == "PASS" and all(tested.get(i) == h for i, h in heads.items()):
+            return run
+    return None
+
+
+# ---------------------------------------------------------------- usage ledger and estimates
+
+def common_dir(root):
+    common = git(root, "rev-parse", "--git-common-dir") or ".git"
+    base = Path(common)
+    return base if base.is_absolute() else Path(root) / base
+
+
+def usage_records(root):
+    d = common_dir(root) / "flow-usage"
+    out = []
+    if d.exists():
+        for f in sorted(d.glob("*.json")):
+            try:
+                rec = json.loads(f.read_text("utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+    return out
+
+
+def window_start(window, now=None):
+    now = now or time.time()
+    if window == "week":
+        return now - 7 * 86400
+    if window == "five_hour":
+        return now - 5 * 3600
+    local = dt.datetime.fromtimestamp(now)
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def shipped_metrics(root):
+    out = []
+    for f in sorted((Path(root) / "docs" / "items").glob("*/metrics.json")):
+        try:
+            m = json.loads(f.read_text("utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(m, dict):
+            out.append(m)
+    return out
+
+
+def level_estimate(root, cfg, level, history=None):
+    """(usd, source): the median cost of shipped items at this level once there are 3, else the config value."""
+    history = shipped_metrics(root) if history is None else history
+    costs = [float(m["cost_usd"]) for m in history
+             if m.get("budget") == level and isinstance(m.get("cost_usd"), (int, float)) and m["cost_usd"] > 0]
+    if len(costs) >= 3:
+        return round(statistics.median(costs), 2), f"median of {len(costs)} shipped"
+    configured = ((cfg.get("budgets") or {}).get(level) or {}).get("estimate_usd")
+    if isinstance(configured, (int, float)):
+        return float(configured), "config"
+    return ESTIMATE_USD.get(level, ESTIMATE_USD["standard"]), "default"
+
+
+def capacity(root, cfg, items, claims, now=None):
+    """What the global budget and the rate limit still allow. Conservative when there is no usage data."""
+    now = now or time.time()
+    orch = cfg.get("orchestration") or {}
+    budget = orch.get("cost_budget_usd")
+    budget = float(budget) if isinstance(budget, (int, float)) else None
+    window = orch.get("budget_window", "day")
+    floor = float(orch.get("rate_limit_floor", 20))
+    factor = float(orch.get("unknown_usage_factor", 1.5))
+    records = usage_records(root)
+    start = window_start(window, now)
+    in_window = [r for r in records if float(r.get("updated") or 0) >= start]
+    live = bool(records)
+    today = dt.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+
+    def window_cost(r):
+        cost = float(r.get("cost_usd") or 0)
+        if window == "day" and r.get("day") == today:              # a session that began yesterday
+            cost -= float(r.get("day_base_cost") or 0)
+        return max(cost, 0.0)
+
+    spent = sum(window_cost(r) for r in in_window)
+    by_item = {}
+    for r in records:
+        if r.get("item"):
+            by_item[r["item"]] = by_item.get(r["item"], 0.0) + float(r.get("cost_usd") or 0)
+    history = shipped_metrics(root)
+    levels = {i["id"]: (i.get("budget") or cfg.get("budget_default") or "standard") for i in items}
+    committed = 0.0
+    for item in claims:
+        est = level_estimate(root, cfg, levels.get(item, "standard"), history)[0]
+        committed += max(est - by_item.get(item, 0.0), 0.0) if live else est * factor
+    latest = max(records, key=lambda r: float(r.get("updated") or 0), default=None)
+    five = None
+    if latest and latest.get("five_hour_pct") is not None:
+        resets = latest.get("five_hour_resets_at")
+        if not resets or float(resets) > now:
+            five = float(latest["five_hour_pct"])
+    remaining = None if budget is None else round(budget - spent - committed, 2)
+    return {"budget": budget, "window": window, "spent": round(spent, 2), "committed": round(committed, 2),
+            "remaining": remaining, "live": live, "five_hour_pct": five, "rate_floor": floor,
+            "rate_blocked": five is not None and five >= 100 - floor, "by_item": by_item,
+            "estimate": lambda level: level_estimate(root, cfg, level, history),
+            "start_cost": lambda level: level_estimate(root, cfg, level, history)[0] * (1 if live else factor)}
